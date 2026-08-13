@@ -1,0 +1,122 @@
+{
+  "countries": [
+    {
+      "id": "IND",
+      "name": "India"
+    },
+    {
+      "id": "USA",
+      "name": "United States"
+    },
+    {
+      "id": "DEU",
+      "name": "Germany"
+    },
+    {
+      "id": "CHN",
+      "name": "China"
+    },
+    {
+      "id": "NLD",
+      "name": "Netherlands"
+    }
+  ],
+
+  "suppliers": [
+    {
+      "id": "SUP001",
+      "name": "Global Electronics Components",
+      "country": "IND",
+      "risk": 0.15
+    },
+    {
+      "id": "SUP002",
+      "name": "Asia Semiconductor Supply",
+      "country": "CHN",
+      "risk": 0.25
+    },
+    {
+      "id": "SUP003",
+      "name": "European Precision Parts",
+      "country": "DEU",
+      "risk": 0.10
+    }
+  ],
+
+  "manufacturers": [
+    {
+      "id": "MAN001",
+      "name": "North America Electronics",
+      "country": "USA"
+    },
+    {
+      "id": "MAN002",
+      "name": "European Consumer Devices",
+      "country": "DEU"
+    },
+    {
+      "id": "MAN003",
+      "name": "India Assembly Works",
+      "country": "IND"
+    }
+  ],
+
+  "products": [
+    {
+      "id": "PROD001",
+      "name": "Smartphone",
+      "category": "Consumer Electronics"
+    },
+    {
+      "id": "PROD002",
+      "name": "Laptop",
+      "category": "Consumer Electronics"
+    },
+    {
+      "id": "PROD003",
+      "name": "Automotive Controller",
+      "category": "Automotive"
+    }
+  ],
+
+  "ports": [
+    {
+      "id": "PORT001",
+      "name": "Port of Rotterdam",
+      "country": "NLD"
+    },
+    {
+      "id": "PORT002",
+      "name": "Port of Shanghai",
+      "country": "CHN"
+    },
+    {
+      "id": "PORT003",
+      "name": "Port of Los Angeles",
+      "country": "USA"
+    },
+    {
+      "id": "PORT004",
+      "name": "Port of Hamburg",
+      "country": "DEU"
+    },
+    {
+      "id": "PORT005",
+      "name": "Port of Chennai",
+      "country": "IND"
+    }
+  ],
+
+  "warehouses": [
+    {
+      "id": "WH001",
+      "name": "Chicago Distribution Center",
+      "country": "USA"
+    },
+    {
+      "id": "WH002",
+      "name": "Bengaluru Distribution Center",
+      "country": "IND"
+    }
+  ]
+}
