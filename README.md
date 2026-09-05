@@ -1,4 +1,4 @@
-# AtmoGraph — Supply Chain Ripple Effect Predictor
+# 🌍 AtmoGraph — Supply Chain Ripple Effect Predictor
 
 > An AI-powered supply-chain intelligence platform that transforms disruption-related news into an interconnected supply-chain graph and predicts potential downstream delays and ripple effects using Graph Neural Networks.
 
