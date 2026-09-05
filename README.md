@@ -184,7 +184,7 @@ Interactive Supply-Chain Intelligence
 └─────────────────────────────────────────────────────┘
 ```
 🧰 Technology Stack
-
+```
 | Category                     | Technology |
 
 | Programming Language         | Python |
@@ -199,6 +199,7 @@ Interactive Supply-Chain Intelligence
 | API Documentation            | FastAPI / Swagger |
 | Version Control              | Git |
 | Repository Hosting           | GitHub |
+```
 
 📁 Project Structure
 ```text
