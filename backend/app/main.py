@@ -7,13 +7,23 @@ import sys
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
+
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
+
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.app.routes import graph, news, stats, risk
+from backend.app.routes import (
+    graph,
+    news,
+    stats,
+    risk,
+    prediction,
+    ripple,
+)
+
 
 app = FastAPI(
     title="AtmoGraph API",
@@ -21,7 +31,9 @@ app = FastAPI(
     version="1.0.0",
 )
 
+
 # ─── CORS — allow React dev server ───────────────────────────────────────────
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -37,13 +49,55 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ─── Routers ─────────────────────────────────────────────────────────────────
-app.include_router(graph.router,  prefix="/api/graph",  tags=["Graph"])
-app.include_router(news.router,   prefix="/api/news",   tags=["News"])
-app.include_router(stats.router,  prefix="/api/stats",  tags=["Stats"])
-app.include_router(risk.router,   prefix="/api/risk",   tags=["Risk"])
 
+# ─── Routers ─────────────────────────────────────────────────────────────────
+
+app.include_router(
+    graph.router,
+    prefix="/api/graph",
+    tags=["Graph"]
+)
+
+app.include_router(
+    news.router,
+    prefix="/api/news",
+    tags=["News"]
+)
+
+app.include_router(
+    stats.router,
+    prefix="/api/stats",
+    tags=["Stats"]
+)
+
+app.include_router(
+    risk.router,
+    prefix="/api/risk",
+    tags=["Risk"]
+)
+
+# ─── GNN Prediction Router ──────────────────────────────────────────────────
+
+app.include_router(
+    prediction.router,
+    prefix="/api/prediction",
+    tags=["GNN Prediction"]
+)
+
+# ─── Ripple Effect Router ────────────────────────────────────────────────────
+
+app.include_router(
+    ripple.router,
+    prefix="/api/ripple",
+    tags=["Ripple Effect"]
+)
+
+
+# ─── Health Check ────────────────────────────────────────────────────────────
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "service": "AtmoGraph API"}
+    return {
+        "status": "ok",
+        "service": "AtmoGraph API"
+    }
