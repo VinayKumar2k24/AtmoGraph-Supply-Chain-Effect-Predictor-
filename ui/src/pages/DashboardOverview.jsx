@@ -19,6 +19,7 @@ import {
   Activity,
   Layers,
   Sparkles,
+  RefreshCw,
 } from 'lucide-react';
 import { fetchStats, fetchNews, fetchRisk } from '../services/api.js';
 import { nodeTypeColors } from '../data/graphData.js';
@@ -84,50 +85,61 @@ export default function DashboardOverview() {
   const [news, setNews] = useState(null);
   const [risk, setRisk] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
-  useEffect(() => {
+  const loadData = () => {
+    setLoading(true);
+    setError(null);
     Promise.all([fetchStats(), fetchNews(), fetchRisk()])
       .then(([s, n, r]) => {
         setStats(s);
         setNews(n);
         setRisk(r);
       })
+      .catch((err) => {
+        console.error('Failed to load dashboard data:', err);
+        setError(err.message || 'Unable to connect to FastAPI backend at http://127.0.0.1:8000');
+      })
       .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    loadData();
   }, []);
 
   const summaryCards = stats
     ? [
         {
           label: 'Suppliers',
-          value: stats.suppliers,
+          value: stats.suppliers ?? 0,
           icon: Package,
           color: nodeTypeColors.supplier,
           bg: 'rgba(245,158,11,0.12)',
         },
         {
           label: 'Manufacturers',
-          value: stats.manufacturers,
+          value: stats.manufacturers ?? 0,
           icon: Factory,
           color: nodeTypeColors.manufacturer,
           bg: 'rgba(16,185,129,0.12)',
         },
         {
           label: 'Products',
-          value: stats.products,
+          value: stats.products ?? 0,
           icon: Box,
           color: nodeTypeColors.product,
           bg: 'rgba(59,130,246,0.12)',
         },
         {
           label: 'Ports',
-          value: stats.ports,
+          value: stats.ports ?? 0,
           icon: Anchor,
           color: nodeTypeColors.port,
           bg: 'rgba(168,85,247,0.12)',
         },
         {
           label: 'Countries',
-          value: stats.countries,
+          value: stats.countries ?? 0,
           icon: Globe,
           color: nodeTypeColors.country,
           bg: 'rgba(99,102,241,0.12)',
@@ -148,7 +160,7 @@ export default function DashboardOverview() {
         },
         {
           label: 'Graph Edges',
-          value: stats.totalRelationships,
+          value: stats.totalRelationships ?? 0,
           icon: LinkIcon,
           color: '#818cf8',
           bg: 'rgba(99,102,241,0.08)',
@@ -182,13 +194,49 @@ export default function DashboardOverview() {
             Real-time supply chain disruption monitoring & Neo4j graph intelligence
           </p>
         </div>
-        <div className="page-header-actions">
+        <div className="page-header-actions" style={{ display: 'flex', gap: 8 }}>
+          <button onClick={loadData} className="btn btn-outline" title="Refresh Live Data">
+            <RefreshCw size={13} />
+            Refresh
+          </button>
           <Link to="/graph" className="btn btn-primary">
             <Share2 size={13} />
             Explore Graph
           </Link>
         </div>
       </div>
+
+      {/* Backend Error Alert Banner */}
+      {error && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            background: 'rgba(239,68,68,0.12)',
+            border: '1px solid rgba(239,68,68,0.35)',
+            borderRadius: '8px',
+            padding: '10px 16px',
+            marginBottom: '16px',
+            color: '#fca5a5',
+            fontSize: '13px',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <AlertTriangle size={16} color="#ef4444" />
+            <span>
+              <strong>API Connection Alert:</strong> {error}
+            </span>
+          </div>
+          <button
+            onClick={loadData}
+            className="btn btn-outline"
+            style={{ padding: '4px 10px', fontSize: '12px' }}
+          >
+            <RefreshCw size={12} /> Retry
+          </button>
+        </div>
+      )}
 
       {/* Summary KPI Bar */}
       <div className="dashboard-kpi-bar">
@@ -309,17 +357,17 @@ export default function DashboardOverview() {
             <div className="network-snapshot-card">
               <div className="network-stats-row">
                 <div className="network-stat-item">
-                  <div className="network-stat-num">{stats?.totalNodes || 21}</div>
+                  <div className="network-stat-num">{stats?.totalNodes ?? '—'}</div>
                   <div className="network-stat-lbl">Graph Nodes</div>
                 </div>
                 <div className="network-stat-divider" />
                 <div className="network-stat-item">
-                  <div className="network-stat-num">{stats?.totalRelationships || 29}</div>
+                  <div className="network-stat-num">{stats?.totalRelationships ?? '—'}</div>
                   <div className="network-stat-lbl">Active Paths</div>
                 </div>
                 <div className="network-stat-divider" />
                 <div className="network-stat-item">
-                  <div className="network-stat-num">{stats?.countries || 5}</div>
+                  <div className="network-stat-num">{stats?.countries ?? '—'}</div>
                   <div className="network-stat-lbl">Global Regions</div>
                 </div>
                 <div className="network-stat-divider" />
@@ -331,19 +379,19 @@ export default function DashboardOverview() {
 
               <div className="network-entities-pills">
                 <span className="entity-chip-pill" style={{ color: nodeTypeColors.supplier }}>
-                  <Package size={11} /> 3 Suppliers
+                  <Package size={11} /> {stats?.suppliers ?? 0} Suppliers
                 </span>
                 <span className="entity-chip-pill" style={{ color: nodeTypeColors.manufacturer }}>
-                  <Factory size={11} /> 3 Manufacturers
+                  <Factory size={11} /> {stats?.manufacturers ?? 0} Manufacturers
                 </span>
                 <span className="entity-chip-pill" style={{ color: nodeTypeColors.product }}>
-                  <Box size={11} /> 3 Products
+                  <Box size={11} /> {stats?.products ?? 0} Products
                 </span>
                 <span className="entity-chip-pill" style={{ color: nodeTypeColors.port }}>
-                  <Anchor size={11} /> 5 Shipping Ports
+                  <Anchor size={11} /> {stats?.ports ?? 0} Shipping Ports
                 </span>
                 <span className="entity-chip-pill" style={{ color: nodeTypeColors.warehouse }}>
-                  <Warehouse size={11} /> 2 Warehouses
+                  <Warehouse size={11} /> {stats?.warehouses ?? 0} Warehouses
                 </span>
               </div>
 
@@ -409,34 +457,51 @@ export default function DashboardOverview() {
             <div className="top-risks-section">
               <div className="section-mini-title">Top Monitored Risks</div>
               <div className="top-risks-list">
-                {(risk?.top_risks || []).slice(0, 3).map((e) => (
-                  <div key={e.id} className="top-risk-row">
-                    <div style={{ minWidth: 0, flex: 1 }}>
-                      <div className="top-risk-name truncate">{e.name}</div>
-                      <div className="top-risk-sub">
-                        <span>{e.id}</span>
-                        <span>·</span>
-                        <span style={{ color: nodeTypeColors[e.type?.toLowerCase()] }}>
-                          {e.type}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="top-risk-score-wrap">
-                      <span className="top-risk-pct" style={{ color: e.risk_score >= 0.2 ? '#f59e0b' : '#22c55e' }}>
-                        {((e.risk_score || 0) * 100).toFixed(0)}%
-                      </span>
-                      <span
-                        className="top-risk-badge"
-                        style={{
-                          color: e.risk_level === 'HIGH' ? '#ef4444' : '#f59e0b',
-                          background: e.risk_level === 'HIGH' ? 'rgba(239,68,68,0.12)' : 'rgba(245,158,11,0.12)',
-                        }}
-                      >
-                        {e.risk_level}
-                      </span>
-                    </div>
+                {(risk?.top_risks || []).length === 0 ? (
+                  <div style={{ fontSize: '12px', color: '#64748b', padding: '16px 0', textAlign: 'center' }}>
+                    No elevated risk entities detected in active graph.
                   </div>
-                ))}
+                ) : (
+                  (risk?.top_risks || []).slice(0, 3).map((e) => {
+                    const levelColors = {
+                      CRITICAL: { text: '#dc2626', bg: 'rgba(220,38,38,0.15)' },
+                      HIGH: { text: '#ef4444', bg: 'rgba(239,68,68,0.12)' },
+                      MEDIUM: { text: '#f59e0b', bg: 'rgba(245,158,11,0.12)' },
+                      LOW: { text: '#22c55e', bg: 'rgba(34,197,94,0.12)' },
+                    };
+                    const lc = levelColors[e.risk_level] || { text: '#94a3b8', bg: 'rgba(148,163,184,0.1)' };
+                    const entityId = e.id || e.type;
+
+                    return (
+                      <div key={e.id || e.name} className="top-risk-row">
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                          <div className="top-risk-name truncate">{e.name}</div>
+                          <div className="top-risk-sub">
+                            <span>{entityId}</span>
+                            <span>·</span>
+                            <span style={{ color: nodeTypeColors[e.type?.toLowerCase()] || '#818cf8' }}>
+                              {e.type}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="top-risk-score-wrap">
+                          <span className="top-risk-pct" style={{ color: lc.text }}>
+                            {((e.risk_score || 0) * 100).toFixed(0)}%
+                          </span>
+                          <span
+                            className="top-risk-badge"
+                            style={{
+                              color: lc.text,
+                              background: lc.bg,
+                            }}
+                          >
+                            {e.risk_level}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
               </div>
             </div>
           </div>
@@ -468,7 +533,7 @@ export default function DashboardOverview() {
                 },
                 {
                   title: 'Neo4j Knowledge Graph Synchronized',
-                  detail: '21 Nodes, 29 Relationships verified healthy',
+                  detail: `${stats?.totalNodes || 18} Nodes, ${stats?.totalRelationships || 24} Relationships verified healthy`,
                   time: '1 hr ago',
                   type: 'success',
                   badge: 'GRAPH',

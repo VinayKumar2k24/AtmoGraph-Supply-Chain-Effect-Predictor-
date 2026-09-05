@@ -1,29 +1,43 @@
 import { useState } from 'react';
-import { Layers, ChevronDown, ChevronUp, Eye, EyeOff } from 'lucide-react';
-import { nodeTypeColors, edgeTypeInfo } from '../data/graphData.js';
+import {
+  Layers,
+  ChevronDown,
+  ChevronUp,
+  Globe,
+  Truck,
+  Factory,
+  Cpu,
+  Anchor,
+  Warehouse,
+  ArrowRight,
+} from 'lucide-react';
+import { nodeTypeColors } from '../data/graphData.js';
+import { EDGE_STYLE_CONFIG } from '../utils/graphValidation.js';
 
 const NODE_LEGEND = [
-  { type: 'country',      label: 'Country' },
-  { type: 'supplier',     label: 'Supplier' },
-  { type: 'manufacturer', label: 'Manufacturer' },
-  { type: 'product',      label: 'Product' },
-  { type: 'port',         label: 'Port' },
-  { type: 'warehouse',    label: 'Warehouse' },
+  { type: 'country',      label: 'Country',      Icon: Globe,     color: nodeTypeColors.country },
+  { type: 'supplier',     label: 'Supplier',     Icon: Truck,     color: nodeTypeColors.supplier },
+  { type: 'manufacturer', label: 'Manufacturer', Icon: Factory,   color: nodeTypeColors.manufacturer },
+  { type: 'product',      label: 'Product',      Icon: Cpu,       color: nodeTypeColors.product },
+  { type: 'port',         label: 'Port',         Icon: Anchor,    color: nodeTypeColors.port },
+  { type: 'warehouse',    label: 'Warehouse',    Icon: Warehouse, color: nodeTypeColors.warehouse },
 ];
 
-const EDGE_LEGEND = [
-  { type: 'SUPPLIES',      label: 'SUPPLIES',      dashed: false },
-  { type: 'PRODUCES',      label: 'PRODUCES',      dashed: false },
-  { type: 'SHIPS_THROUGH', label: 'SHIPS_THROUGH', dashed: true },
-  { type: 'CONNECTED_TO',  label: 'CONNECTED_TO',  dashed: true },
-  { type: 'LOCATED_IN',    label: 'LOCATED_IN',    dashed: true },
+const RELATIONSHIPS_LIST = [
+  { type: 'SUPPLIES',   desc: 'Supplier → Manufacturer' },
+  { type: 'PRODUCES',   desc: 'Manufacturer → Product' },
+  { type: 'PROVIDES',   desc: 'Supplier → Product' },
+  { type: 'SHIPS_TO',   desc: 'Manufacturer → Warehouse' },
+  { type: 'SERVES',     desc: 'Port → Warehouse' },
+  { type: 'STORED_AT',  desc: 'Product → Warehouse' },
+  { type: 'LOCATED_IN', desc: 'Port / Supplier → Country' },
 ];
 
-export default function GraphLegend({ showLocatedIn, onToggleLocatedIn }) {
+export default function GraphLegend() {
   const [collapsed, setCollapsed] = useState(false);
 
   return (
-    <div className={`graph-legend ${collapsed ? 'collapsed' : ''}`}>
+    <div className={`graph-legend ${collapsed ? 'collapsed' : ''}`} style={{ maxWidth: 260 }}>
       <div
         className="legend-title"
         onClick={() => setCollapsed(!collapsed)}
@@ -38,74 +52,85 @@ export default function GraphLegend({ showLocatedIn, onToggleLocatedIn }) {
 
       {!collapsed && (
         <div className="legend-body">
-          {/* Node types */}
+          {/* Node Entities Section */}
           <div className="legend-section">
-            <div className="legend-section-title">Node Entities</div>
-            <div className="legend-grid">
-              {NODE_LEGEND.map(({ type, label }) => (
-                <div className="legend-item" key={type}>
-                  <span
-                    className="legend-dot"
+            <div className="legend-section-title">Node Categories</div>
+            <div className="legend-grid" style={{ gridTemplateColumns: 'repeat(2, 1fr)', gap: '6px 10px' }}>
+              {NODE_LEGEND.map(({ type, label, Icon, color }) => (
+                <div className="legend-item" key={type} style={{ gap: 6 }}>
+                  <div
                     style={{
-                      background: nodeTypeColors[type],
-                      boxShadow: `0 0 6px ${nodeTypeColors[type]}60`,
-                    }}
-                  />
-                  <span>{label}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Relationship types */}
-          <div className="legend-section">
-            <div className="legend-section-title">Relationships</div>
-            <div className="legend-edge-list">
-              {EDGE_LEGEND.map(({ type, label, dashed }) => (
-                <div className="legend-item" key={type}>
-                  {dashed ? (
-                    <div
-                      style={{
-                        width: 18,
-                        height: 2,
-                        borderTop: `2px dashed ${edgeTypeInfo[type]?.stroke || '#64748b'}`,
-                        flexShrink: 0,
-                      }}
-                    />
-                  ) : (
-                    <div
-                      style={{
-                        width: 18,
-                        height: 2.5,
-                        background: edgeTypeInfo[type]?.stroke || '#64748b',
-                        flexShrink: 0,
-                        borderRadius: 1,
-                      }}
-                    />
-                  )}
-                  <span
-                    style={{
-                      fontSize: '10px',
-                      fontFamily: 'JetBrains Mono, monospace',
-                      color: edgeTypeInfo[type]?.stroke || '#94a3b8',
-                      fontWeight: 600,
+                      width: 18,
+                      height: 18,
+                      borderRadius: 4,
+                      background: `${color}20`,
+                      border: `1px solid ${color}45`,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      color,
                     }}
                   >
-                    {label}
-                  </span>
+                    <Icon size={10} />
+                  </div>
+                  <span style={{ fontSize: '11px', color: '#e2e8f0' }}>{label}</span>
                 </div>
               ))}
             </div>
           </div>
 
-          {/* Toggle LOCATED_IN */}
-          <button
-            onClick={onToggleLocatedIn}
-            className={`legend-toggle-btn ${showLocatedIn ? 'active' : ''}`}
-          >
-            {showLocatedIn ? <Eye size={12} /> : <EyeOff size={12} />}
-            <span>{showLocatedIn ? 'Hide LOCATED_IN Edges' : 'Show LOCATED_IN Edges'}</span>
-          </button>
+          {/* Directed Flow Semantics */}
+          <div className="legend-section">
+            <div className="legend-section-title">Relationship Semantics</div>
+            <div
+              style={{
+                background: 'rgba(255,255,255,0.03)',
+                padding: '6px 8px',
+                borderRadius: '6px',
+                border: '1px solid rgba(255,255,255,0.06)',
+                marginBottom: '8px',
+                fontSize: '10px',
+                color: '#94a3b8',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+              }}
+            >
+              <ArrowRight size={12} color="#818cf8" />
+              <span>Arrows indicate directed relationship flow</span>
+            </div>
+
+            <div className="legend-edge-list">
+              {RELATIONSHIPS_LIST.map(({ type, desc }) => {
+                const styleCfg = EDGE_STYLE_CONFIG[type] || { stroke: '#64748b', dashed: false };
+                return (
+                  <div className="legend-item" key={type} style={{ justifyContent: 'space-between' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <div
+                        style={{
+                          width: 14,
+                          height: 2,
+                          background: styleCfg.stroke,
+                          borderTop: styleCfg.dashed ? `2px dashed ${styleCfg.stroke}` : undefined,
+                        }}
+                      />
+                      <span
+                        style={{
+                          fontSize: '10px',
+                          fontFamily: 'monospace',
+                          color: styleCfg.stroke,
+                          fontWeight: 700,
+                        }}
+                      >
+                        {type}
+                      </span>
+                    </div>
+                    <span style={{ fontSize: '9px', color: '#64748b' }}>{desc}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         </div>
       )}
     </div>

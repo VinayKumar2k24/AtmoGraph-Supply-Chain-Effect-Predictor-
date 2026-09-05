@@ -18,10 +18,10 @@ router = APIRouter()
 
 # ─── Node type color map ─────────────────────────────────────────────────────
 NODE_COLORS = {
-    "Country":      "#6366f1",
+    "Country":      "#38bdf8",
     "Supplier":     "#f59e0b",
     "Manufacturer": "#10b981",
-    "Product":      "#3b82f6",
+    "Product":      "#818cf8",
     "Port":         "#a855f7",
     "Warehouse":    "#06b6d4",
 }
@@ -64,15 +64,27 @@ POSITIONS = {
 EDGE_STYLES = {
     "SUPPLIES":      {"stroke": "#f59e0b", "animated": True,  "strokeDasharray": None,  "label": "supplies"},
     "PRODUCES":      {"stroke": "#10b981", "animated": True,  "strokeDasharray": None,  "label": "produces"},
+    "PROVIDES":      {"stroke": "#3b82f6", "animated": True,  "strokeDasharray": None,  "label": "provides"},
+    "SHIPS_TO":      {"stroke": "#a855f7", "animated": False, "strokeDasharray": "5 3", "label": "ships to"},
     "SHIPS_THROUGH": {"stroke": "#a855f7", "animated": False, "strokeDasharray": "5 3", "label": "ships via"},
-    "CONNECTED_TO":  {"stroke": "#06b6d4", "animated": False, "strokeDasharray": "3 4", "label": "→"},
-    "LOCATED_IN":    {"stroke": "#475569", "animated": False, "strokeDasharray": "2 4", "label": "located in"},
+    "SERVES":        {"stroke": "#06b6d4", "animated": False, "strokeDasharray": "3 4", "label": "serves"},
+    "STORED_AT":     {"stroke": "#818cf8", "animated": False, "strokeDasharray": "4 4", "label": "stored at"},
+    "CONNECTED_TO":  {"stroke": "#06b6d4", "animated": False, "strokeDasharray": "3 4", "label": "connected to"},
+    "LOCATED_IN":    {"stroke": "#64748b", "animated": False, "strokeDasharray": "2 4", "label": "located in"},
 }
 
 
 def _node_to_rf(node_id: str, labels: list, props: dict) -> dict:
     """Convert a Neo4j node to a React Flow node."""
-    node_type = labels[0].lower() if labels else "unknown"
+    type_priority = ["Country", "Supplier", "Manufacturer", "Product", "Port", "Warehouse"]
+    node_type = "unknown"
+    for t in type_priority:
+        if t in labels:
+            node_type = t.lower()
+            break
+    if node_type == "unknown" and labels:
+        node_type = labels[0].lower()
+
     pos = POSITIONS.get(node_id, {"x": 0, "y": 0})
     return {
         "id": node_id,
@@ -82,6 +94,7 @@ def _node_to_rf(node_id: str, labels: list, props: dict) -> dict:
             "nodeType": node_type,
             "id": node_id,
             "name": props.get("name", node_id),
+            "labels": labels,
             **{k: v for k, v in props.items() if k not in ("name",)},
         },
     }
@@ -95,7 +108,7 @@ def get_graph():
         node_query = """
         MATCH (n)
         RETURN
-            n.id       AS id,
+            coalesce(n.id, n.code, n.name, toString(id(n))) AS id,
             labels(n)  AS labels,
             properties(n) AS props
         ORDER BY labels(n)[0], n.id
@@ -113,8 +126,8 @@ def get_graph():
         edge_query = """
         MATCH (a)-[r]->(b)
         RETURN
-            a.id          AS source,
-            b.id          AS target,
+            coalesce(a.id, a.code, a.name, toString(id(a))) AS source,
+            coalesce(b.id, b.code, b.name, toString(id(b))) AS target,
             type(r)       AS rel_type,
             properties(r) AS rel_props
         """
@@ -132,14 +145,14 @@ def get_graph():
                     "animated": style["animated"],
                     "label": style["label"],
                     "labelBgStyle": {"fill": "rgba(13,18,32,0.85)", "rx": 4},
-                    "labelStyle": {"fill": "#64748b", "fontSize": 10},
+                    "labelStyle": {"fill": "#94a3b8", "fontSize": 10},
                     "style": {
                         "stroke": style["stroke"],
                         "strokeWidth": 1.5,
                         "strokeDasharray": style["strokeDasharray"],
                     },
                     "data": {"relType": rel_type},
-                    "hidden": rel_type == "LOCATED_IN",
+                    "hidden": False,
                 })
                 edge_idx += 1
 

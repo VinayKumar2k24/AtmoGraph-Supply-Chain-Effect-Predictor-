@@ -21,25 +21,34 @@ def get_stats():
     try:
         query = """
         CALL {
-            MATCH (n:Country)      RETURN 'countries'     AS key, count(n) AS val
+            OPTIONAL MATCH (n:Country)      RETURN 'countries'     AS key, count(n) AS val
             UNION ALL
-            MATCH (n:Supplier)     RETURN 'suppliers'     AS key, count(n) AS val
+            OPTIONAL MATCH (n:Supplier)     RETURN 'suppliers'     AS key, count(n) AS val
             UNION ALL
-            MATCH (n:Manufacturer) RETURN 'manufacturers' AS key, count(n) AS val
+            OPTIONAL MATCH (n:Manufacturer) RETURN 'manufacturers' AS key, count(n) AS val
             UNION ALL
-            MATCH (n:Product)      RETURN 'products'      AS key, count(n) AS val
+            OPTIONAL MATCH (n:Product)      RETURN 'products'      AS key, count(n) AS val
             UNION ALL
-            MATCH (n:Port)         RETURN 'ports'         AS key, count(n) AS val
+            OPTIONAL MATCH (n:Port)         RETURN 'ports'         AS key, count(n) AS val
             UNION ALL
-            MATCH (n:Warehouse)    RETURN 'warehouses'    AS key, count(n) AS val
+            OPTIONAL MATCH (n:Warehouse)    RETURN 'warehouses'    AS key, count(n) AS val
             UNION ALL
-            MATCH (n)              RETURN 'totalNodes'    AS key, count(n) AS val
+            OPTIONAL MATCH (n)              RETURN 'totalNodes'    AS key, count(n) AS val
             UNION ALL
-            MATCH ()-[r]->()       RETURN 'totalRelationships' AS key, count(r) AS val
+            OPTIONAL MATCH ()-[r]->()       RETURN 'totalRelationships' AS key, count(r) AS val
         }
         RETURN key, val
         """
-        result = {}
+        result = {
+            "countries": 0,
+            "suppliers": 0,
+            "manufacturers": 0,
+            "products": 0,
+            "ports": 0,
+            "warehouses": 0,
+            "totalNodes": 0,
+            "totalRelationships": 0,
+        }
         with db.session() as session:
             for record in session.run(query):
                 result[record["key"]] = record["val"]

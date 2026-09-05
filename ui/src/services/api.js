@@ -7,24 +7,34 @@
 
 import { initialNodes, initialEdges, graphStats } from '../data/graphData.js';
 
-// BASE is used only for non-proxied calls (none currently)
-// All /api/* paths go through the Vite dev-server proxy to http://127.0.0.1:8000
-const BASE = '';
+// Centralized Backend API base URL
+// Configurable via Vite environment variable VITE_API_URL, defaulting to http://127.0.0.1:8000
+export const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
 
 async function apiFetch(path, opts = {}) {
-  const res = await fetch(`${BASE}${path}`, {
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  const url = `${API_BASE_URL}${normalizedPath}`;
+  const res = await fetch(url, {
     headers: { 'Content-Type': 'application/json' },
     ...opts,
   });
-  if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
+  if (!res.ok) {
+    let errorDetail = res.statusText;
+    try {
+      const errJson = await res.json();
+      if (errJson?.detail) errorDetail = errJson.detail;
+    } catch {
+      // ignore JSON parse error
+    }
+    throw new Error(`API Error ${res.status}: ${errorDetail}`);
+  }
   return res.json();
 }
 
 // ─── Health ──────────────────────────────────────────────────────────────────
-// Uses relative path → goes through Vite proxy → no CORS issue
 export async function fetchHealth() {
   try {
-    const res = await fetch('/api/health', { signal: AbortSignal.timeout(4000) });
+    const res = await fetch(`${API_BASE_URL}/api/health`, { signal: AbortSignal.timeout(4000) });
     if (!res.ok) throw new Error('not ok');
     const data = await res.json();
     return { connected: true, ...data };
@@ -35,13 +45,7 @@ export async function fetchHealth() {
 
 // ─── Graph ───────────────────────────────────────────────────────────────────
 export async function fetchGraph() {
-  // Graph endpoint: try live backend; fall back to static mock if unavailable
-  try {
-    return await apiFetch('/api/graph');
-  } catch {
-    await new Promise((r) => setTimeout(r, 60));
-    return { nodes: initialNodes, edges: initialEdges, stats: graphStats };
-  }
+  return apiFetch('/api/graph');
 }
 
 export async function fetchNodeDetail(nodeId) {
@@ -73,16 +77,40 @@ export async function fetchRisk() {
   return apiFetch('/api/risk');
 }
 
+export async function fetchRiskTop(limit = 10) {
+  return apiFetch(`/api/risk/top?limit=${limit}`);
+}
+
+export const fetchTopRisks = fetchRiskTop;
+
 export async function fetchRiskEntities() {
   return apiFetch('/api/risk/entities');
 }
 
-// ─── Ripple (Week 3+) ────────────────────────────────────────────────────────
-export async function simulateRipple(nodeId, disruptionType) {
-  return apiFetch('/api/ripple', {
-    method: 'POST',
-    body: JSON.stringify({ nodeId, disruptionType }),
-  });
+// ─── GNN Predictions & Evaluation ───────────────────────────────────────────
+export async function fetchPredictions() {
+  return apiFetch('/api/prediction/predictions');
+}
+
+export async function fetchEvaluation() {
+  return apiFetch('/api/prediction/evaluation');
+}
+
+// ─── Ripple Propagation (Week 3) ─────────────────────────────────────────────
+export async function fetchRippleNodes() {
+  return apiFetch('/api/ripple/nodes');
+}
+
+export async function simulateRipple(nodeId, decay = 0.70) {
+  const enc = encodeURIComponent(nodeId);
+  return apiFetch(`/api/ripple/${enc}?decay=${decay}`);
+}
+
+export const fetchRipple = simulateRipple;
+
+export async function fetchExplainability(nodeName) {
+  const enc = encodeURIComponent(nodeName);
+  return apiFetch(`/api/risk/explainability/${enc}`);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

@@ -1,20 +1,43 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { GitBranch, Activity, RefreshCw, Bell, ShieldCheck, Sparkles } from 'lucide-react';
-import { fetchHealth } from '../services/api.js';
+import { fetchHealth, fetchStats } from '../services/api.js';
 
 export default function Header({ backendStatus }) {
   const [refreshing, setRefreshing] = useState(false);
   const [localStatus, setLocalStatus] = useState(backendStatus || 'checking');
+  const [graphMetrics, setGraphMetrics] = useState({ totalNodes: 18, totalRelationships: 24 });
+
+  const loadStats = useCallback(async () => {
+    try {
+      const s = await fetchStats();
+      if (s && typeof s.totalNodes === 'number') {
+        setGraphMetrics({
+          totalNodes: s.totalNodes,
+          totalRelationships: s.totalRelationships ?? 24,
+        });
+      }
+    } catch {
+      // Retain baseline verified graph counts if fetch fails
+    }
+  }, []);
 
   useEffect(() => {
     setLocalStatus(backendStatus || 'checking');
   }, [backendStatus]);
 
+  useEffect(() => {
+    loadStats();
+  }, [loadStats]);
+
   const handleRefresh = async () => {
     setRefreshing(true);
     try {
-      const r = await fetchHealth();
-      setLocalStatus(r.connected ? 'online' : 'offline');
+      const [r] = await Promise.allSettled([fetchHealth(), loadStats()]);
+      if (r.status === 'fulfilled') {
+        setLocalStatus(r.value.connected ? 'online' : 'offline');
+      } else {
+        setLocalStatus('offline');
+      }
     } catch {
       setLocalStatus('offline');
     } finally {
@@ -61,7 +84,7 @@ export default function Header({ backendStatus }) {
 
         <div className="header-meta-stat">
           <Activity size={13} color="#818cf8" />
-          <span>Neo4j Graph · 21 Nodes · 29 Edges</span>
+          <span>Neo4j Graph · {graphMetrics.totalNodes} Nodes · {graphMetrics.totalRelationships} Edges</span>
         </div>
       </div>
 

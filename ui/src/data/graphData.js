@@ -3,7 +3,12 @@
  * Transforms the mock_supply_chain.json structure into React Flow nodes and edges.
  * Designed so this file can be replaced by live API data in Week 2
  * without changing any component code.
+ *
+ * Layout: Dagre hierarchical layout is applied via getHierarchicalLayout()
+ * so both the static fallback AND live Neo4j data render identically clean.
  */
+
+import { getHierarchicalLayout } from '../utils/hierarchicalLayout.js';
 
 // ─── RAW MOCK DATA ───────────────────────────────────────────────────────────
 // Mirrors data/mock_supply_chain.json exactly.
@@ -144,11 +149,35 @@ const EDGE_STYLES = {
     strokeDasharray: null,
     label: 'produces',
   },
+  PROVIDES: {
+    stroke: '#3b82f6',
+    animated: true,
+    strokeDasharray: null,
+    label: 'provides',
+  },
+  SHIPS_TO: {
+    stroke: '#a855f7',
+    animated: false,
+    strokeDasharray: '5 3',
+    label: 'ships to',
+  },
   SHIPS_THROUGH: {
     stroke: '#a855f7',
     animated: false,
     strokeDasharray: '5 3',
     label: 'ships via',
+  },
+  SERVES: {
+    stroke: '#06b6d4',
+    animated: false,
+    strokeDasharray: '3 4',
+    label: 'serves',
+  },
+  STORED_AT: {
+    stroke: '#818cf8',
+    animated: false,
+    strokeDasharray: '4 4',
+    label: 'stored at',
   },
   CONNECTED_TO: {
     stroke: '#06b6d4',
@@ -157,7 +186,7 @@ const EDGE_STYLES = {
     label: '→',
   },
   LOCATED_IN: {
-    stroke: '#475569',
+    stroke: '#64748b',
     animated: false,
     strokeDasharray: '2 4',
     label: 'located in',
@@ -281,8 +310,8 @@ function buildEdges() {
           strokeDasharray: style.strokeDasharray,
         },
         data: { relType },
-        // LOCATED_IN hidden by default
-        hidden: relType === 'LOCATED_IN',
+        // All edges visible by default
+        hidden: false,
       });
     });
   });
@@ -292,8 +321,8 @@ function buildEdges() {
 
 // ─── STATISTICS ──────────────────────────────────────────────────────────────
 export const graphStats = {
-  totalNodes: 21,
-  totalRelationships: 29,
+  totalNodes: 18,
+  totalRelationships: 24,
   countries:     rawData.countries.length,
   suppliers:     rawData.suppliers.length,
   manufacturers: rawData.manufacturers.length,
@@ -310,8 +339,13 @@ export const graphStats = {
 };
 
 // ─── EXPORTS ─────────────────────────────────────────────────────────────────
-export const initialNodes = buildNodes();
-export const initialEdges = buildEdges();
+// Apply hierarchical layout to the static fallback data so the graph
+// is clean and organised even before live API data arrives.
+const _rawNodes = buildNodes();
+const _rawEdges = buildEdges();
+
+export const initialNodes = getHierarchicalLayout(_rawNodes, _rawEdges);
+export const initialEdges = _rawEdges;
 
 /** Returns the country name for a given country id */
 export function getCountryName(id) {
@@ -327,10 +361,10 @@ export const edgeTypeInfo = EDGE_STYLES;
 
 /** Color map for node types */
 export const nodeTypeColors = {
-  country:      '#6366f1',
-  supplier:     '#f59e0b',
-  manufacturer: '#10b981',
-  product:      '#3b82f6',
-  port:         '#a855f7',
-  warehouse:    '#06b6d4',
+  country:      '#38bdf8', // Blue / sky / cyan
+  supplier:     '#f59e0b', // Yellow / gold
+  manufacturer: '#10b981', // Green
+  product:      '#818cf8', // Purple / blue
+  port:         '#a855f7', // Violet
+  warehouse:    '#06b6d4', // Cyan / teal
 };
