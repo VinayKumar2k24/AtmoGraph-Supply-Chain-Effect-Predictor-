@@ -22,6 +22,9 @@ from backend.app.routes import (
     risk,
     prediction,
     ripple,
+    realtime,
+    forecast,
+    websocket,
 )
 
 
@@ -90,6 +93,28 @@ app.include_router(
     ripple.router,
     prefix="/api/ripple",
     tags=["Ripple Effect"]
+)
+
+# ─── Real-Time Pipeline Router ───────────────────────────────────────────────
+
+app.include_router(
+    realtime.router,
+    prefix="/api/realtime",
+    tags=["Real-Time Pipeline"]
+)
+
+# ─── Supply Chain Forecast Router (30/60/90 Days) ───────────────────────────
+
+app.include_router(
+    forecast.router,
+    prefix="/api/forecast",
+    tags=["Supply Chain Forecast"]
+)
+
+# ─── WebSocket Live Stream Router ────────────────────────────────────────────
+
+app.include_router(
+    websocket.router
 )
 
 
