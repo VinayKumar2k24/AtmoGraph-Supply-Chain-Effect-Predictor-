@@ -17,48 +17,8 @@ class NewsGraphService:
         self.news_service = NewsIngestionService()
         self.entity_matcher = EntityMatcher()
 
-    def match_entity(self, entity):
-
-        text = entity["text"]
-        label = entity["label"]
-
-        result = None
-        matched_type = None
-
-        if label == "GPE":
-
-            result = self.entity_matcher.find_country(text)
-
-            if result:
-                matched_type = "Country"
-
-        elif label == "LOC":
-
-            result = self.entity_matcher.find_port(text)
-
-            if result:
-                matched_type = "Port"
-
-        elif label == "ORG":
-
-            result = self.entity_matcher.find_supplier(text)
-
-            if result:
-                matched_type = "Supplier"
-
-            else:
-
-                result = self.entity_matcher.find_manufacturer(text)
-
-                if result:
-                    matched_type = "Manufacturer"
-
-        return {
-            "text": text,
-            "label": label,
-            "matched": bool(result),
-            "graph_type": matched_type
-        }
+    def match_entity(self, entity, source=None):
+        return self.entity_matcher.match_entity(entity, source=source)
 
     # ========================================================
     # APPLY NEWS RISK
@@ -66,14 +26,18 @@ class NewsGraphService:
 
     def apply_news_risk(self, entity):
 
-        if not entity["matched"]:
+        if not entity.get("matched"):
             return
 
-        text = entity["text"]
-        graph_type = entity["graph_type"]
+        if entity.get("is_source"):
+            return
+
+        graph_type = entity.get("graph_type")
+        canonical_name = entity.get("canonical_name") or entity.get("text")
 
         risk_values = {
             "Port": 0.70,
+            "Warehouse": 0.50,
             "Supplier": 0.40,
             "Manufacturer": 0.30,
             "Country": 0.20
@@ -88,7 +52,8 @@ class NewsGraphService:
 
         query = f"""
         MATCH (n:{label})
-        WHERE toLower(n.name) CONTAINS toLower($name)
+        WHERE toLower(n.name) = toLower($name)
+           OR toLower(n.name) CONTAINS toLower($name)
 
         SET n.risk = CASE
             WHEN coalesce(n.risk, 0.0) < $risk
@@ -104,7 +69,7 @@ class NewsGraphService:
             session.run(
                 query,
                 {
-                    "name": text,
+                    "name": canonical_name,
                     "risk": risk
                 }
             ).consume()
@@ -183,9 +148,10 @@ class NewsGraphService:
 
         matched_entities = []
 
+        article_source = news.get("source")
         for entity in news["entities"]:
 
-            matched = self.match_entity(entity)
+            matched = self.match_entity(entity, source=article_source)
 
             matched_entities.append(matched)
 
@@ -201,5 +167,6 @@ class NewsGraphService:
             "title": news["title"],
             "source": news["source"],
             "published_at": news["published_at"],
+            "text": news.get("text", ""),
             "entities": matched_entities
         }
