@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Package,
@@ -20,9 +20,14 @@ import {
   Layers,
   Sparkles,
   RefreshCw,
+  Radio,
+  Loader2,
 } from 'lucide-react';
 import { fetchStats, fetchNews, fetchRisk } from '../services/api.js';
 import { nodeTypeColors } from '../data/graphData.js';
+import LiveNewsStatus from '../components/LiveNewsStatus.jsx';
+import { useLiveWebSocket } from '../context/LiveWebSocketContext.jsx';
+import { getExtractedCount, getMatchedCount } from '../services/liveWebSocket.js';
 
 // ─── Risk badge ───────────────────────────────────────────────────────────────
 function RiskBadge({ level }) {
@@ -81,14 +86,20 @@ function TypeBadge({ type, text }) {
 }
 
 export default function DashboardOverview() {
+  const { liveNewsArticles, latestProcessedEvent, workerStatus } = useLiveWebSocket();
   const [stats, setStats] = useState(null);
   const [news, setNews] = useState(null);
   const [risk, setRisk] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState(null);
+  const lastProcessedRef = useRef(null);
 
-  const loadData = () => {
-    setLoading(true);
+  const isLiveProcessing = workerStatus?.status === 'processing';
+
+  // Initial load only - sets initialLoading to true initially and false when complete
+  const loadInitialData = useCallback(() => {
+    setInitialLoading(true);
     setError(null);
     Promise.all([fetchStats(), fetchNews(), fetchRisk()])
       .then(([s, n, r]) => {
@@ -100,12 +111,63 @@ export default function DashboardOverview() {
         console.error('Failed to load dashboard data:', err);
         setError(err.message || 'Unable to connect to FastAPI backend at http://127.0.0.1:8000');
       })
-      .finally(() => setLoading(false));
-  };
+      .finally(() => setInitialLoading(false));
+  }, []);
+
+  // Background refresh - NEVER touches initialLoading, ensuring the dashboard never blinks
+  const refreshDataInBackground = useCallback(() => {
+    setIsRefreshing(true);
+    Promise.all([fetchStats(), fetchNews(), fetchRisk()])
+      .then(([s, n, r]) => {
+        if (s) setStats(s);
+        if (n) setNews(n);
+        if (r) setRisk(r);
+      })
+      .catch((err) => {
+        console.warn('[Dashboard] Background refresh error:', err);
+      })
+      .finally(() => setIsRefreshing(false));
+  }, []);
 
   useEffect(() => {
-    loadData();
-  }, []);
+    loadInitialData();
+  }, [loadInitialData]);
+
+  // Automatic REST data refresh when live_news_processed arrives (Requirement 4 & 5)
+  useEffect(() => {
+    const eventId = latestProcessedEvent?.article_id;
+    if (eventId && eventId !== lastProcessedRef.current) {
+      lastProcessedRef.current = eventId;
+      console.log('[Dashboard] Live event processed via WebSocket, updating data in background:', eventId);
+      refreshDataInBackground();
+    }
+  }, [latestProcessedEvent, refreshDataInBackground]);
+
+  const articles = useMemo(() => {
+    const apiArticles = news?.articles || [];
+    const liveItems = liveNewsArticles || [];
+
+    const seenIds = new Set();
+    const result = [];
+
+    // 1. Live news events at top (newest first)
+    for (const item of liveItems) {
+      if (item?.id && !seenIds.has(item.id)) {
+        seenIds.add(item.id);
+        result.push(item);
+      }
+    }
+
+    // 2. Keep existing manually loaded news items working
+    for (const item of apiArticles) {
+      if (item?.id && !seenIds.has(item.id)) {
+        seenIds.add(item.id);
+        result.push(item);
+      }
+    }
+
+    return result;
+  }, [news, liveNewsArticles]);
 
   const summaryCards = stats
     ? [
@@ -168,7 +230,7 @@ export default function DashboardOverview() {
       ]
     : [];
 
-  if (loading) {
+  if (initialLoading && !stats && !news && !risk) {
     return (
       <div className="page-loading-wrap">
         <div className="spinner" />
@@ -179,7 +241,6 @@ export default function DashboardOverview() {
     );
   }
 
-  const articles = news?.articles || [];
   const dist = risk?.distribution || { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 };
   const totalRiskEntities =
     (dist.CRITICAL || 0) + (dist.HIGH || 0) + (dist.MEDIUM || 0) + (dist.LOW || 0) || 1;
@@ -189,15 +250,43 @@ export default function DashboardOverview() {
       {/* Page Header */}
       <div className="page-header-row">
         <div>
-          <h1 className="page-main-title">Intelligence Dashboard</h1>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <h1 className="page-main-title">Intelligence Dashboard</h1>
+            {isLiveProcessing && (
+              <span
+                className="live-processing-badge"
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  fontSize: '11.5px',
+                  fontWeight: 700,
+                  color: '#38bdf8',
+                  background: 'rgba(56, 189, 248, 0.12)',
+                  border: '1px solid rgba(56, 189, 248, 0.35)',
+                  borderRadius: '9999px',
+                  padding: '2px 10px',
+                  letterSpacing: '0.4px',
+                }}
+              >
+                <Loader2 size={12} className="spin" />
+                Live update processing…
+              </span>
+            )}
+          </div>
           <p className="page-sub-title">
             Real-time supply chain disruption monitoring & Neo4j graph intelligence
           </p>
         </div>
         <div className="page-header-actions" style={{ display: 'flex', gap: 8 }}>
-          <button onClick={loadData} className="btn btn-outline" title="Refresh Live Data">
-            <RefreshCw size={13} />
-            Refresh
+          <button
+            onClick={refreshDataInBackground}
+            disabled={isRefreshing}
+            className="btn btn-outline"
+            title="Refresh Live Data"
+          >
+            <RefreshCw size={13} className={isRefreshing ? 'spin' : ''} />
+            {isRefreshing ? 'Refreshing…' : 'Refresh'}
           </button>
           <Link to="/graph" className="btn btn-primary">
             <Share2 size={13} />
@@ -229,7 +318,7 @@ export default function DashboardOverview() {
             </span>
           </div>
           <button
-            onClick={loadData}
+            onClick={loadInitialData}
             className="btn btn-outline"
             style={{ padding: '4px 10px', fontSize: '12px' }}
           >
@@ -237,6 +326,9 @@ export default function DashboardOverview() {
           </button>
         </div>
       )}
+
+      {/* Live News & WebSocket Stream Status Card */}
+      <LiveNewsStatus onDataRefresh={refreshDataInBackground} />
 
       {/* Summary KPI Bar */}
       <div className="dashboard-kpi-bar">
@@ -287,9 +379,49 @@ export default function DashboardOverview() {
                   >
                     <div className="news-card-row">
                       <div className="news-card-top">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                          {article.is_live && (
+                            <span
+                              style={{
+                                fontSize: '10px',
+                                fontWeight: 800,
+                                color: '#ef4444',
+                                background: 'rgba(239,68,68,0.18)',
+                                border: '1px solid rgba(239,68,68,0.5)',
+                                borderRadius: '4px',
+                                padding: '1px 6px',
+                                letterSpacing: '0.6px',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                              }}
+                            >
+                              <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#ef4444' }} />
+                              LIVE
+                            </span>
+                          )}
                           <span className="news-id-pill">{article.id}</span>
-                          <RiskBadge level={article.risk_level} />
+                          <RiskBadge level={article.risk_level || 'HIGH'} />
+                          {article.shock_origin && (
+                            <span
+                              style={{
+                                fontSize: '10px',
+                                fontWeight: 600,
+                                color: '#c084fc',
+                                background: 'rgba(168,85,247,0.12)',
+                                border: '1px solid rgba(168,85,247,0.25)',
+                                borderRadius: '4px',
+                                padding: '1px 6px',
+                              }}
+                            >
+                              Shock: {article.shock_origin}
+                            </span>
+                          )}
+                          {article.source && (
+                            <span style={{ fontSize: '11px', color: '#64748b' }}>
+                              · {article.source}
+                            </span>
+                          )}
                         </div>
                         <span className="news-date">
                           <Clock size={11} />
@@ -313,26 +445,26 @@ export default function DashboardOverview() {
 
                       <div className="news-bottom-row">
                         <div className="news-entities-chips">
-                          {(article.entities || [])
-                            .filter((e) => e.matched)
+                          {(article.entities || article.matched_entities || [])
+                            .filter((e) => e && (e.matched === true || e.status === 'matched'))
                             .slice(0, 4)
                             .map((e, i) => (
                               <TypeBadge
                                 key={i}
-                                type={e.graph_type}
-                                text={`${e.text} → ${e.graph_type}`}
+                                type={e.graph_type || e.graph_node_type}
+                                text={`${e.text || e.name} → ${e.graph_type || e.graph_node_type}`}
                               />
                             ))}
-                          {(article.entities || []).filter((e) => e.matched).length > 4 && (
+                          {(article.entities || article.matched_entities || []).filter((e) => e && (e.matched === true || e.status === 'matched')).length > 4 && (
                             <span className="more-pill">
-                              +{(article.entities || []).filter((e) => e.matched).length - 4} more
+                              +{(article.entities || article.matched_entities || []).filter((e) => e && (e.matched === true || e.status === 'matched')).length - 4} more
                             </span>
                           )}
                         </div>
 
                         <span className="news-match-stat">
                           <CheckCircle2 size={12} color="#22c55e" />
-                          {article.matched_count}/{article.total_entities} Matched
+                          {getMatchedCount(article)}/{getExtractedCount(article)} Matched
                         </span>
                       </div>
                     </div>

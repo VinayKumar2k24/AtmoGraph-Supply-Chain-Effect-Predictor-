@@ -9,6 +9,7 @@ import NewsDetailPage from './pages/NewsDetailPage.jsx';
 import RiskPage from './pages/RiskPage.jsx';
 import AnalyticsPage from './pages/AnalyticsPage.jsx';
 import { fetchHealth } from './services/api.js';
+import { LiveWebSocketProvider } from './context/LiveWebSocketContext.jsx';
 
 export default function App() {
   const [backendStatus, setBackendStatus] = useState('checking');
@@ -21,22 +22,26 @@ export default function App() {
 
   return (
     <BrowserRouter>
-      <div className="app-shell">
+      <LiveWebSocketProvider>
+        <div className="app-shell">
         <Header backendStatus={backendStatus} />
         <Sidebar />
         <main className="app-main">
           <Routes>
-            <Route path="/"          element={<Navigate to="/dashboard" replace />} />
-            <Route path="/dashboard" element={<DashboardOverview />} />
-            <Route path="/graph"     element={<GraphPage />} />
-            <Route path="/news"      element={<NewsPage />} />
-            <Route path="/news/:id"  element={<NewsDetailPage />} />
-            <Route path="/risk"      element={<RiskPage />} />
-            <Route path="/analytics" element={<AnalyticsPage />} />
-            <Route path="*"          element={<Navigate to="/dashboard" replace />} />
+            <Route path="/"                 element={<Navigate to="/dashboard" replace />} />
+            <Route path="/dashboard"        element={<DashboardOverview />} />
+            <Route path="/graph"            element={<GraphPage />} />
+            <Route path="/news"             element={<NewsPage />} />
+            <Route path="/news/:id"         element={<NewsDetailPage />} />
+            <Route path="/nlp-inspect/:id"  element={<NewsDetailPage />} />
+            <Route path="/nlp-inspect"      element={<NewsDetailPage />} />
+            <Route path="/risk"             element={<RiskPage />} />
+            <Route path="/analytics"        element={<AnalyticsPage />} />
+            <Route path="*"                 element={<Navigate to="/dashboard" replace />} />
           </Routes>
         </main>
-      </div>
+        </div>
+      </LiveWebSocketProvider>
     </BrowserRouter>
   );
 }
