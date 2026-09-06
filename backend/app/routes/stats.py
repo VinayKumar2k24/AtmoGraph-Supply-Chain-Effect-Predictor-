@@ -20,7 +20,7 @@ def get_stats():
     """Return entity and relationship counts from Neo4j."""
     try:
         query = """
-        CALL {
+        CALL () {
             OPTIONAL MATCH (n:Country)      RETURN 'countries'     AS key, count(n) AS val
             UNION ALL
             OPTIONAL MATCH (n:Supplier)     RETURN 'suppliers'     AS key, count(n) AS val

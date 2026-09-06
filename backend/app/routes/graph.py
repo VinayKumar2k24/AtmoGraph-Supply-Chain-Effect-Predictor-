@@ -108,10 +108,10 @@ def get_graph():
         node_query = """
         MATCH (n)
         RETURN
-            coalesce(n.id, n.code, n.name, toString(id(n))) AS id,
+            coalesce(n.id, n.name, elementId(n)) AS id,
             labels(n)  AS labels,
             properties(n) AS props
-        ORDER BY labels(n)[0], n.id
+        ORDER BY n.id
         """
         rf_nodes = []
         with db.session() as session:
@@ -126,8 +126,8 @@ def get_graph():
         edge_query = """
         MATCH (a)-[r]->(b)
         RETURN
-            coalesce(a.id, a.code, a.name, toString(id(a))) AS source,
-            coalesce(b.id, b.code, b.name, toString(id(b))) AS target,
+            coalesce(a.id, a.name, elementId(a)) AS source,
+            coalesce(b.id, b.name, elementId(b)) AS target,
             type(r)       AS rel_type,
             properties(r) AS rel_props
         """
