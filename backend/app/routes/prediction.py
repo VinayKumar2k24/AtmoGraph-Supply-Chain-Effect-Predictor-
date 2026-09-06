@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException
 
 from backend.app.services.gnn_predictor import (
     predict_supply_chain_risk,
-    evaluate_gnn_model
+    evaluate_gnn_model,
 )
 
 
@@ -25,23 +25,26 @@ router = APIRouter()
 def get_gnn_predictions():
     """
     Generate GNN predictions for all supply-chain nodes.
+
+    Returns:
+        - success
+        - total_nodes
+        - node-level predictions
     """
 
     try:
-
         results = predict_supply_chain_risk()
 
         return {
             "success": True,
             "total_nodes": len(results),
-            "predictions": results
+            "predictions": results,
         }
 
     except Exception as e:
-
         raise HTTPException(
             status_code=500,
-            detail=str(e)
+            detail=f"GNN prediction failed: {str(e)}",
         )
 
 
@@ -52,52 +55,98 @@ def get_gnn_predictions():
 @router.get("/evaluation")
 def get_gnn_evaluation():
     """
-    Evaluate the trained GNN model dynamically.
+    Dynamically evaluate the trained GraphSAGE GNN model.
 
     Returns:
         - MAE
         - RMSE
         - R²
-        - total nodes
-        - node-level actual vs predicted delays
+        - total evaluated nodes
+        - actual vs predicted delay for every node
     """
 
     try:
 
+        # ----------------------------------------------------
+        # Run dynamic GNN evaluation
+        # ----------------------------------------------------
+
         evaluation = evaluate_gnn_model()
 
         # ----------------------------------------------------
-        # Normalize metric names
-        # Supports either lowercase or uppercase keys
-        # returned by gnn_predictor.py
+        # Get metrics
+        #
+        # Current evaluate_gnn_model() structure:
+        #
+        # {
+        #     "metrics": {
+        #         "mae": ...,
+        #         "rmse": ...,
+        #         "r2": ...
+        #     },
+        #     "total_nodes": ...,
+        #     "predictions": [...]
+        # }
+        #
+        # The fallback logic also supports older structures.
         # ----------------------------------------------------
 
-        mae = evaluation.get(
+        metrics = evaluation.get("metrics", {})
+
+        mae = metrics.get(
             "mae",
-            evaluation.get("MAE")
+            metrics.get("MAE")
         )
 
-        rmse = evaluation.get(
+        rmse = metrics.get(
             "rmse",
-            evaluation.get("RMSE")
+            metrics.get("RMSE")
         )
 
-        r2 = evaluation.get(
+        r2 = metrics.get(
             "r2",
-            evaluation.get("R2")
+            metrics.get("R2")
+        )
+
+        # ----------------------------------------------------
+        # Fallback:
+        # Support evaluation results where metrics are returned
+        # directly at the top level.
+        # ----------------------------------------------------
+
+        if mae is None:
+            mae = evaluation.get(
+                "mae",
+                evaluation.get("MAE")
+            )
+
+        if rmse is None:
+            rmse = evaluation.get(
+                "rmse",
+                evaluation.get("RMSE")
+            )
+
+        if r2 is None:
+            r2 = evaluation.get(
+                "r2",
+                evaluation.get("R2")
+            )
+
+        # ----------------------------------------------------
+        # Get total nodes
+        # ----------------------------------------------------
+
+        predictions = evaluation.get(
+            "predictions",
+            []
         )
 
         total_nodes = evaluation.get(
             "total_nodes",
             evaluation.get(
                 "nodes",
-                len(evaluation.get("predictions", []))
+                len(predictions)
             )
-        )
-
-        predictions = evaluation.get(
-            "predictions",
-            []
         )
 
         # ----------------------------------------------------
@@ -120,7 +169,7 @@ def get_gnn_evaluation():
             )
 
         # ----------------------------------------------------
-        # API RESPONSE
+        # Return clean API response
         # ----------------------------------------------------
 
         return {
@@ -129,17 +178,17 @@ def get_gnn_evaluation():
             "metrics": {
                 "mae": round(float(mae), 4),
                 "rmse": round(float(rmse), 4),
-                "r2": round(float(r2), 4)
+                "r2": round(float(r2), 4),
             },
 
             "total_nodes": int(total_nodes),
 
-            "predictions": predictions
+            "predictions": predictions,
         }
 
     except Exception as e:
 
         raise HTTPException(
             status_code=500,
-            detail=str(e)
+            detail=f"GNN evaluation failed: {str(e)}",
         )

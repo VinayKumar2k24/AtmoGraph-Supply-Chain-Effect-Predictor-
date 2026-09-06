@@ -113,6 +113,26 @@ export async function fetchExplainability(nodeName) {
   return apiFetch(`/api/risk/explainability/${enc}`);
 }
 
+// ─── Real-Time Pipeline (Week 4) ─────────────────────────────────────────────
+export async function processRealtimeDisruption(payload = {}) {
+  return apiFetch('/api/realtime/process', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export const triggerRealtimePipeline = processRealtimeDisruption;
+
+export async function fetchRealtimeStatus() {
+  return apiFetch('/api/realtime/status');
+}
+
+// ─── Supply Chain Forecast (30 / 60 / 90 Days) ──────────────────────────────
+export async function fetchForecast(shockNode) {
+  const query = shockNode ? `?shock_node=${encodeURIComponent(shockNode)}` : '';
+  return apiFetch(`/api/forecast/30-60-90${query}`);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // MOCK DATA — mirrors the actual backend pipeline output
 // ═══════════════════════════════════════════════════════════════════════════════
