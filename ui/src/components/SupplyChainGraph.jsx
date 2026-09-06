@@ -20,7 +20,63 @@ import AtmoNode from './AtmoNode.jsx';
 import { getHierarchicalLayout } from '../utils/hierarchicalLayout.js';
 import { validateAndTransformGraph } from '../utils/graphValidation.js';
 
-const NODE_TYPES = { atomoNode: AtmoNode };
+const NODE_TYPES = {
+  atomoNode: AtmoNode,
+  atmoNode: AtmoNode,
+  default: AtmoNode,
+};
+
+/**
+ * Canonical node resolver matching node by ID, neo4j_id, name, or substring/token.
+ */
+export function findCanonicalNode(nodeList, identifier) {
+  if (!identifier || !Array.isArray(nodeList) || nodeList.length === 0) return null;
+  const rawTarget = String(identifier).trim();
+  const lowerTarget = rawTarget.toLowerCase();
+
+  // 1. Exact match on ID or data.id or data.neo4j_id
+  let match = nodeList.find(
+    (n) =>
+      n.id === rawTarget ||
+      n.data?.id === rawTarget ||
+      n.data?.neo4j_id === rawTarget
+  );
+  if (match) return match;
+
+  // 2. Case-insensitive exact match on ID
+  match = nodeList.find(
+    (n) =>
+      (n.id && n.id.toLowerCase() === lowerTarget) ||
+      (n.data?.id && n.data?.id.toLowerCase() === lowerTarget) ||
+      (n.data?.neo4j_id && n.data?.neo4j_id.toLowerCase() === lowerTarget)
+  );
+  if (match) return match;
+
+  // 3. Case-insensitive exact match on Name
+  match = nodeList.find(
+    (n) => n.data?.name && n.data.name.trim().toLowerCase() === lowerTarget
+  );
+  if (match) return match;
+
+  // 4. Substring match (either name contains target or target contains name)
+  match = nodeList.find((n) => {
+    const name = (n.data?.name || '').toLowerCase();
+    return name && (name.includes(lowerTarget) || lowerTarget.includes(name));
+  });
+  if (match) return match;
+
+  // 5. Token match (e.g. "Chennai" matching "Chennai Port")
+  const targetTokens = lowerTarget.split(/\s+/).filter((t) => t.length > 2);
+  if (targetTokens.length > 0) {
+    match = nodeList.find((n) => {
+      const name = (n.data?.name || '').toLowerCase();
+      return targetTokens.some((tok) => name.includes(tok));
+    });
+    if (match) return match;
+  }
+
+  return null;
+}
 
 function FlowCanvas({
   onNodeSelect,
@@ -67,16 +123,45 @@ function FlowCanvas({
   }, [onNodeSelect, onEdgeSelect, onStatsCalculated, onGraphLoaded]);
 
   // ── Apply Hierarchical Layout and Fit View ──────────────────────────────────
+  const triggerFitView = useCallback(() => {
+    requestAnimationFrame(() => {
+      reactFlowInstance?.fitView?.({ padding: 0.2, duration: 400 });
+    });
+    setTimeout(() => {
+      reactFlowInstance?.fitView?.({ padding: 0.2, duration: 400 });
+    }, 150);
+    setTimeout(() => {
+      reactFlowInstance?.fitView?.({ padding: 0.2, duration: 300 });
+    }, 350);
+  }, [reactFlowInstance]);
+
+  const centerOnNode = useCallback(
+    (targetNode, zoom = 1.05) => {
+      if (!targetNode || !reactFlowInstance?.setCenter) return;
+      const posX = (targetNode.position?.x ?? 0) + 100;
+      const posY = (targetNode.position?.y ?? 0) + 42.5;
+
+      requestAnimationFrame(() => {
+        reactFlowInstance.setCenter(posX, posY, { zoom, duration: 400 });
+      });
+      setTimeout(() => {
+        reactFlowInstance.setCenter(posX, posY, { zoom, duration: 400 });
+      }, 120);
+      setTimeout(() => {
+        reactFlowInstance.setCenter(posX, posY, { zoom, duration: 300 });
+      }, 350);
+    },
+    [reactFlowInstance]
+  );
+
   const applyLayout = useCallback(
     (nodeList, edgeList) => {
       const laid = getHierarchicalLayout(nodeList, edgeList);
       setNodes(laid);
-      setTimeout(() => {
-        reactFlowInstance?.fitView?.({ padding: 0.18, duration: 500 });
-      }, 80);
+      triggerFitView();
       return laid;
     },
-    [reactFlowInstance, setNodes]
+    [triggerFitView, setNodes]
   );
 
   // ── Fetch Graph Data from live FastAPI Backend ─────────────────────────────
@@ -118,16 +203,29 @@ function FlowCanvas({
       callbacksRef.current.onStatsCalculated?.(stats);
       callbacksRef.current.onGraphLoaded?.({ nodes: laidNodes, edges: validEdges, stats });
 
-      setTimeout(() => {
-        reactFlowInstance?.fitView?.({ padding: 0.18, duration: 500 });
-      }, 120);
+      let focusedOnLoad = false;
+      if (focusNodeId) {
+        const target = findCanonicalNode(laidNodes, focusNodeId);
+        if (target) {
+          setSelectedNodeId(target.id);
+          setSelectedEdgeId(null);
+          callbacksRef.current.onNodeSelect?.(target);
+          callbacksRef.current.onEdgeSelect?.(null);
+          centerOnNode(target, 1.05);
+          focusedOnLoad = true;
+        }
+      }
+
+      if (!focusedOnLoad) {
+        triggerFitView();
+      }
     } catch (err) {
       console.error('[AtmoGraph] Failed to load graph data:', err);
       setError(err.message || 'Unable to connect to backend server at http://127.0.0.1:8000');
     } finally {
       setLoading(false);
     }
-  }, [reactFlowInstance, setNodes, setEdges]);
+  }, [focusNodeId, triggerFitView, centerOnNode, setNodes, setEdges]);
 
   // Load once on component mount
   useEffect(() => {
@@ -144,59 +242,53 @@ function FlowCanvas({
         const laid = applyLayout(rawGraphRef.current.nodes, rawGraphRef.current.edges);
         rawGraphRef.current = { ...rawGraphRef.current, nodes: laid };
       },
-      fitView: () => {
-        reactFlowInstance?.fitView?.({ padding: 0.18, duration: 500 });
-      },
+      fitView: triggerFitView,
       focusNode: (nodeId) => {
-        const target = nodesRef.current.find((n) => n.id === nodeId);
+        const target = findCanonicalNode(nodesRef.current, nodeId);
         if (target) {
-          setSelectedNodeId(nodeId);
+          setSelectedNodeId(target.id);
           setSelectedEdgeId(null);
           callbacksRef.current.onNodeSelect?.(target);
           callbacksRef.current.onEdgeSelect?.(null);
-          reactFlowInstance?.setCenter?.(
-            target.position.x + 100,
-            target.position.y + 40,
-            { zoom: 1.15, duration: 600 }
-          );
+          centerOnNode(target, 1.05);
         }
       },
       refresh: loadGraphData,
     };
-  }, [layoutRef, applyLayout, reactFlowInstance, loadGraphData]);
+  }, [layoutRef, applyLayout, triggerFitView, centerOnNode, loadGraphData]);
 
-  // Handle external focusNodeId trigger (e.g. from search selection)
+  // Handle external focusNodeId trigger (e.g. from "View in Graph" or search selection)
   useEffect(() => {
-    if (!focusNodeId) return;
-    const target = nodesRef.current.find((n) => n.id === focusNodeId);
+    if (!focusNodeId || nodes.length === 0) return;
+    const target = findCanonicalNode(nodesRef.current, focusNodeId);
     if (target) {
-      setSelectedNodeId(focusNodeId);
+      setSelectedNodeId(target.id);
       setSelectedEdgeId(null);
-      reactFlowInstance?.setCenter?.(
-        target.position.x + 100,
-        target.position.y + 40,
-        { zoom: 1.15, duration: 600 }
-      );
+      callbacksRef.current.onNodeSelect?.(target);
+      callbacksRef.current.onEdgeSelect?.(null);
+      centerOnNode(target, 1.05);
     }
-  }, [focusNodeId, reactFlowInstance]);
+  }, [focusNodeId, nodes.length, centerOnNode]);
 
   // ── Calculate Connected Neighbors & Edges for Highlight/Dim ───────────────
   const connectedContext = useMemo(() => {
     if (selectedNodeId) {
       const neighborNodeIds = new Set([selectedNodeId]);
       const connectedEdgeIds = new Set();
+      const downstreamEdgeIds = new Set();
 
       rawGraphRef.current.edges.forEach((edge) => {
         if (edge.source === selectedNodeId) {
           neighborNodeIds.add(edge.target);
           connectedEdgeIds.add(edge.id);
+          downstreamEdgeIds.add(edge.id);
         } else if (edge.target === selectedNodeId) {
           neighborNodeIds.add(edge.source);
           connectedEdgeIds.add(edge.id);
         }
       });
 
-      return { type: 'node', neighborNodeIds, connectedEdgeIds };
+      return { type: 'node', neighborNodeIds, connectedEdgeIds, downstreamEdgeIds };
     }
 
     const activeEdgeId = selectedEdgeId || hoveredEdgeId;
@@ -227,8 +319,10 @@ function FlowCanvas({
       currentNodes.map((n) => {
         const { nodeType, id, name } = n.data || {};
 
-        // Node Type filter
-        const matchesType = activeFilter === 'all' || nodeType === activeFilter;
+        // Node Type filter (case-insensitive & robust)
+        const normFilter = (activeFilter || 'all').toLowerCase().trim();
+        const normNodeType = (nodeType || '').toLowerCase().trim();
+        const matchesType = normFilter === 'all' || normNodeType === normFilter;
 
         // Search match
         const matchesSearch =
@@ -239,10 +333,11 @@ function FlowCanvas({
 
         // Path / Relationship filter: if active, show only nodes that participate in that rel
         let matchesRel = true;
-        if (activeRelFilter !== 'ALL') {
+        const normRelFilter = (activeRelFilter || 'ALL').toUpperCase().trim();
+        if (normRelFilter !== 'ALL') {
           const hasRelEdge = rawGraphRef.current.edges.some(
             (e) =>
-              e.data?.relType === activeRelFilter &&
+              (e.data?.relType || '').toUpperCase().trim() === normRelFilter &&
               (e.source === n.id || e.target === n.id)
           );
           matchesRel = hasRelEdge;
@@ -328,8 +423,9 @@ function FlowCanvas({
     setEdges((currentEdges) =>
       currentEdges.map((e) => {
         // Relationship filter match
-        const matchesRelFilter =
-          activeRelFilter === 'ALL' || e.data?.relType === activeRelFilter;
+        const normRelFilter = (activeRelFilter || 'ALL').toUpperCase().trim();
+        const edgeRel = (e.data?.relType || '').toUpperCase().trim();
+        const matchesRelFilter = normRelFilter === 'ALL' || edgeRel === normRelFilter;
 
         // Check if endpoints are visible
         const endpointsVisible =
@@ -371,8 +467,10 @@ function FlowCanvas({
         } else if (connectedContext) {
           if (connectedContext.type === 'node') {
             if (connectedContext.connectedEdgeIds.has(e.id)) {
+              const isDownstream = connectedContext.downstreamEdgeIds?.has(e.id);
               style.opacity = 1;
-              style.strokeWidth = 2.5;
+              style.strokeWidth = isDownstream ? 3 : 2.5;
+              style.stroke = isDownstream ? '#38bdf8' : (e.style?.stroke || '#818cf8');
               animated = true;
             } else {
               style.opacity = 0.08;
@@ -535,9 +633,9 @@ function FlowCanvas({
   }
 
   return (
-    <div className="graph-canvas-wrap" style={{ width: '100%', height: '100%', position: 'relative' }}>
+    <div className="graph-canvas-wrap" style={{ width: '100%', height: '100%', minHeight: 520, position: 'relative' }}>
       <ReactFlow
-        style={{ width: '100%', height: '100%' }}
+        style={{ width: '100%', height: '100%', minHeight: 520 }}
         nodes={nodes}
         edges={edges}
         onNodesChange={onNodesChange}

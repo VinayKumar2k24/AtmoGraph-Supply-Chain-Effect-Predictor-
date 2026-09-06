@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useLocation } from 'react-router-dom';
 import SupplyChainGraph from '../components/SupplyChainGraph.jsx';
 import SearchFilter from '../components/SearchFilter.jsx';
 import NodeDetails from '../components/NodeDetails.jsx';
@@ -23,7 +23,17 @@ import { nodeTypeColors } from '../data/graphData.js';
 
 export default function GraphPage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const initialFilter = searchParams.get('filter') || 'all';
+  const location = useLocation();
+
+  // Detect incoming focus target from router state or query param
+  const focusTarget =
+    location.state?.focusNode ||
+    location.state?.nodeName ||
+    searchParams.get('focus') ||
+    searchParams.get('node') ||
+    null;
+
+  const initialFilter = focusTarget ? 'all' : (searchParams.get('filter') || 'all');
 
   const [selectedNode, setSelectedNode] = useState(null);
   const [selectedEdge, setSelectedEdge] = useState(null);
@@ -34,18 +44,32 @@ export default function GraphPage() {
 
   const [graphStats, setGraphStats] = useState(null);
   const [allNodes, setAllNodes] = useState([]);
-  const [focusNodeId, setFocusNodeId] = useState(null);
+  const [focusNodeId, setFocusNodeId] = useState(focusTarget);
 
   // Ref to invoke layout methods (resetLayout / fitView / focusNode)
   const layoutRef = useRef(null);
 
-  // Synchronize URL query param with activeFilter
+  // Synchronize focus target or URL query param with activeFilter
   useEffect(() => {
-    const f = searchParams.get('filter');
-    if (f && f !== activeFilter) {
-      setActiveFilter(f);
+    const target =
+      location.state?.focusNode ||
+      location.state?.nodeName ||
+      searchParams.get('focus') ||
+      searchParams.get('node');
+
+    if (target) {
+      // Arriving via "View in Graph" -> Ensure full graph is visible without stale filters
+      setActiveFilter('all');
+      setActiveRelFilter('ALL');
+      setSearch('');
+      setFocusNodeId(target);
+    } else {
+      const f = searchParams.get('filter');
+      if (f && f !== activeFilter) {
+        setActiveFilter(f);
+      }
     }
-  }, [searchParams]);
+  }, [location.state, searchParams]);
 
   const handleFilterChange = useCallback((filterId) => {
     setActiveFilter(filterId);
@@ -78,6 +102,7 @@ export default function GraphPage() {
     setSelectedEdge(null);
     setSearch('');
     setFocusNodeId(null);
+    layoutRef.current?.fitView?.();
   }, []);
 
   const handleGraphLoaded = useCallback(({ nodes, stats }) => {
@@ -341,10 +366,7 @@ export default function GraphPage() {
               selectedNode={selectedNode}
               selectedEdge={selectedEdge}
               allNodes={allNodes}
-              onClose={() => {
-                setSelectedNode(null);
-                setSelectedEdge(null);
-              }}
+              onClose={handleClearSelection}
               onFocusNode={(nodeId) => {
                 layoutRef.current?.focusNode?.(nodeId);
               }}

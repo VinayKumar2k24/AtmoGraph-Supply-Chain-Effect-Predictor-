@@ -1,5 +1,5 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
-import { Link } from 'react-router-dom';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import {
   ShieldAlert,
   Package,
@@ -19,6 +19,9 @@ import {
   SlidersHorizontal,
   Activity,
   Layers,
+  Sparkles,
+  Zap,
+  X,
 } from 'lucide-react';
 import {
   RadarChart,
@@ -35,9 +38,19 @@ import {
   Cell,
   CartesianGrid,
 } from 'recharts';
-import { fetchRisk, fetchRiskTop, fetchRiskEntities, fetchPredictions, fetchEvaluation } from '../services/api.js';
+import {
+  fetchRisk,
+  fetchRiskTop,
+  fetchRiskEntities,
+  fetchPredictions,
+  fetchEvaluation,
+  processRealtimeDisruption,
+  fetchRealtimeStatus,
+} from '../services/api.js';
 import { nodeTypeColors } from '../data/graphData.js';
 import RippleAnalysisSection from '../components/RippleAnalysisSection.jsx';
+import ForecastSection from '../components/ForecastSection.jsx';
+import { useLiveWebSocket } from '../context/LiveWebSocketContext.jsx';
 
 const HIGH_DELAY_THRESHOLD = 7.0;
 
@@ -169,11 +182,278 @@ export default function RiskPage() {
   const [metrics, setMetrics] = useState(null);
   const [totalNodes, setTotalNodes] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [initialLoading, setInitialLoading] = useState(true);
   const [error, setError] = useState(null);
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState('ALL');
   const [sortBy, setSortBy] = useState('predicted_delay_desc');
   const [chartScope, setChartScope] = useState('top10');
+
+  // Real-Time Disruption Pipeline State (Week 4)
+  const [realtimeRunning, setRealtimeRunning] = useState(false);
+  const [realtimeResult, setRealtimeResult] = useState(null);
+  const [realtimeError, setRealtimeError] = useState(null);
+  const [realtimeRippleData, setRealtimeRippleData] = useState(null);
+  const [showRealtimeCard, setShowRealtimeCard] = useState(true);
+
+  // Automatic / Live Update Pipeline State (Week 4)
+  const LIVE_UPDATE_INTERVAL = 30000; // 30-second polling cadence
+  const [liveUpdatesEnabled, setLiveUpdatesEnabled] = useState(true);
+  const [liveStatus, setLiveStatus] = useState('monitoring'); // 'monitoring' | 'processing' | 'complete' | 'error'
+  const [lastLiveCheckAt, setLastLiveCheckAt] = useState(null);
+
+  // Live WebSocket Integration (Requirement 7)
+  const { latestProcessedEvent } = useLiveWebSocket();
+  const lastProcessedLiveRef = useRef(null);
+
+  useEffect(() => {
+    if (latestProcessedEvent?.article_id && latestProcessedEvent.article_id !== lastProcessedLiveRef.current) {
+      lastProcessedLiveRef.current = latestProcessedEvent.article_id;
+      console.log('[RiskPage] Live news event received via WebSocket:', latestProcessedEvent.article_id);
+
+      // Automatically refresh risk data, predicted delays, and evaluation metrics without page reload
+      Promise.all([
+        fetchRisk().catch(() => null),
+        fetchRiskTop(10).catch(() => null),
+        fetchRiskEntities().catch(() => null),
+        fetchEvaluation().catch(() => null),
+      ]).then(([rData, topData, eData, evalData]) => {
+        if (rData) setRiskData(rData);
+        if (topData?.risks || rData?.top_risks) setTopRisks(topData?.risks || rData?.top_risks);
+        if (eData?.entities || rData?.top_risks) setEntitiesList(eData?.entities || rData?.top_risks);
+        if (evalData?.predictions) {
+          setPredictions(evalData.predictions);
+          setTotalNodes(evalData.total_nodes || evalData.predictions.length);
+          if (evalData.metrics) {
+            setMetrics({
+              mae: evalData.metrics.mae ?? evalData.metrics.MAE,
+              rmse: evalData.metrics.rmse ?? evalData.metrics.RMSE,
+              r2: evalData.metrics.r2 ?? evalData.metrics.R2,
+            });
+          }
+        }
+      }).catch((err) => console.warn('[RiskPage] Auto-refresh error:', err));
+
+      if (latestProcessedEvent.shock_origin) {
+        setRealtimeResult(latestProcessedEvent);
+      }
+    }
+  }, [latestProcessedEvent]);
+
+  // Read optional URL query parameter ?node=... (e.g. from NewsDetailPage link)
+  const [searchParams] = useSearchParams();
+  const initialUrlNode = searchParams.get('node');
+
+  // Single authoritative selected shock node (User Input State)
+  const [selectedShockNode, setSelectedShockNode] = useState(initialUrlNode || 'Rotterdam Port');
+  const selectedShockNodeRef = useRef(selectedShockNode);
+  const currentRequestIdRef = useRef(0);
+
+  useEffect(() => {
+    selectedShockNodeRef.current = selectedShockNode;
+  }, [selectedShockNode]);
+
+  // Sync if URL search parameter changes
+  useEffect(() => {
+    const nodeFromUrl = searchParams.get('node');
+    if (nodeFromUrl && nodeFromUrl.trim() && nodeFromUrl !== selectedShockNodeRef.current) {
+      setSelectedShockNode(nodeFromUrl.trim());
+      setRealtimeResult(null);
+      setRealtimeRippleData(null);
+      setRealtimeError(null);
+    }
+  }, [searchParams]);
+
+  // Handler for dropdown selection change - clears previous realtime outputs
+  const handleSelectShockNode = useCallback((nodeName) => {
+    if (!nodeName) return;
+    setSelectedShockNode(nodeName);
+    // CLEAR OLD RESULTS WHEN NODE CHANGES:
+    // Invalidate prior realtime result and ripple data so old outputs don't linger for new node
+    setRealtimeResult(null);
+    setRealtimeRippleData(null);
+    setRealtimeError(null);
+  }, []);
+
+  const handleRunRealtime = useCallback(
+    async (customPayload = {}, isAutomatic = false) => {
+      const isLivePoll = isAutomatic || Boolean(customPayload?.is_live_poll);
+
+      // Snapshot user input state: Always strictly prioritize user selection
+      const requestedShockNode = customPayload?.shock_node
+        ? customPayload.shock_node
+        : selectedShockNodeRef.current || 'Rotterdam Port';
+
+      const requestId = ++currentRequestIdRef.current;
+
+      setRealtimeRunning(true);
+      setRealtimeError(null);
+      setShowRealtimeCard(true);
+
+      console.log('[REALTIME UI] selectedShockNode =', requestedShockNode);
+      const payload = {
+        shock_node: requestedShockNode,
+        ...(typeof customPayload === 'object' ? customPayload : {}),
+      };
+      delete payload.is_live_poll;
+      payload.shock_node = requestedShockNode;
+      console.log('[REALTIME UI] payload =', payload);
+
+      try {
+        const res = await processRealtimeDisruption(payload);
+
+        // Stale response protection: Ignore if a newer request was dispatched
+        if (requestId !== currentRequestIdRef.current) {
+          console.warn(
+            `Ignoring stale realtime response (current request ID: ${currentRequestIdRef.current})`
+          );
+          return;
+        }
+
+        if (!res || !res.success) {
+          throw new Error(res?.detail || 'Real-time pipeline failed to process.');
+        }
+
+        // RESULT VALIDATION: Ensure returned shock origin matches requested node for manual runs
+        const returnedShockOrigin =
+          res.shock_origin ||
+          res.ripple_origin ||
+          res.ripple_results?.source_node?.name;
+
+        if (
+          !isLivePoll &&
+          returnedShockOrigin &&
+          requestedShockNode &&
+          returnedShockOrigin.trim().toLowerCase() !== requestedShockNode.trim().toLowerCase()
+        ) {
+          throw new Error(
+            `Synchronization error: Requested shock node "${requestedShockNode}", but backend returned "${returnedShockOrigin}".`
+          );
+        }
+
+        // Stale selection check: If user switched selection while in-flight, discard
+        if (
+          !isLivePoll &&
+          selectedShockNodeRef.current &&
+          requestedShockNode &&
+          selectedShockNodeRef.current.trim().toLowerCase() !== requestedShockNode.trim().toLowerCase()
+        ) {
+          console.warn(
+            `Selection changed to "${selectedShockNodeRef.current}" during request for "${requestedShockNode}". Response discarded.`
+          );
+          return;
+        }
+
+        // OUTPUT ONLY: Update realtime output states (never overwrite selectedShockNode)
+        setRealtimeResult(res);
+
+        if (res.ripple_results && res.ripple_results.source_node) {
+          setRealtimeRippleData(res.ripple_results);
+        }
+
+        // Automatically refresh GNN evaluation metrics, predictions, and risk without full page reload
+        try {
+          const evalData = await fetchEvaluation();
+          if (evalData?.predictions) {
+            setPredictions(evalData.predictions);
+            setTotalNodes(evalData.total_nodes || evalData.predictions.length);
+            if (evalData.metrics) {
+              setMetrics({
+                mae: evalData.metrics.mae ?? evalData.metrics.MAE,
+                rmse: evalData.metrics.rmse ?? evalData.metrics.RMSE,
+                r2: evalData.metrics.r2 ?? evalData.metrics.R2,
+              });
+            }
+          }
+        } catch (e) {
+          console.warn('Failed to refresh evaluation after realtime run:', e);
+        }
+
+        try {
+          const [rData, topData, eData] = await Promise.all([
+            fetchRisk().catch(() => null),
+            fetchRiskTop(10).catch(() => null),
+            fetchRiskEntities().catch(() => null),
+          ]);
+          if (rData) setRiskData(rData);
+          if (topData?.risks || rData?.top_risks) setTopRisks(topData?.risks || rData?.top_risks);
+          if (eData?.entities || rData?.top_risks) setEntitiesList(eData?.entities || rData?.top_risks);
+        } catch (e) {
+          console.warn('Failed to refresh risk overview after realtime run:', e);
+        }
+
+        return res;
+      } catch (err) {
+        console.error('Real-time pipeline execution error:', err);
+        setRealtimeError(err.message || 'Unable to complete real-time disruption pipeline.');
+      } finally {
+        if (requestId === currentRequestIdRef.current) {
+          setRealtimeRunning(false);
+        }
+      }
+    },
+    []
+  );
+
+  // Automatic / Live Update Polling Effect (30s cadence)
+  useEffect(() => {
+    if (!liveUpdatesEnabled) {
+      return;
+    }
+
+    let isMounted = true;
+
+    const checkLiveUpdates = async () => {
+      try {
+        setLastLiveCheckAt(new Date());
+        const status = await fetchRealtimeStatus();
+
+        if (!isMounted) return;
+
+        if (status && status.update_available && status.pending_news) {
+          console.log('[LIVE UPDATE] New disruption news detected:', status.pending_news);
+          setLiveStatus('processing');
+
+          await handleRunRealtime(
+            {
+              news_file: status.pending_news.filename || status.pending_news.file,
+              is_live_poll: true,
+            },
+            true
+          );
+
+          if (isMounted) {
+            setLiveStatus('complete');
+            setTimeout(() => {
+              if (isMounted) setLiveStatus('monitoring');
+            }, 4000);
+          }
+        } else {
+          if (isMounted && liveStatus !== 'processing') {
+            setLiveStatus('monitoring');
+          }
+        }
+      } catch (err) {
+        console.warn('[LIVE UPDATE] Status check failed:', err);
+        if (isMounted) {
+          setLiveStatus('error');
+          setTimeout(() => {
+            if (isMounted) setLiveStatus('monitoring');
+          }, 5000);
+        }
+      }
+    };
+
+    // Initial check
+    checkLiveUpdates();
+
+    const intervalId = setInterval(checkLiveUpdates, LIVE_UPDATE_INTERVAL);
+
+    return () => {
+      isMounted = false;
+      clearInterval(intervalId);
+    };
+  }, [liveUpdatesEnabled, handleRunRealtime]);
 
   const loadData = useCallback(() => {
     setLoading(true);
@@ -201,14 +481,21 @@ export default function RiskPage() {
         setPredictions(predData.predictions || []);
         setTotalNodes(predData.total_nodes || predData.predictions.length || 0);
         if (predData.metrics) {
-          setMetrics(predData.metrics);
+          setMetrics({
+            mae: predData.metrics.mae ?? predData.metrics.MAE,
+            rmse: predData.metrics.rmse ?? predData.metrics.RMSE,
+            r2: predData.metrics.r2 ?? predData.metrics.R2,
+          });
         }
       })
       .catch((err) => {
         console.error('Failed to load GNN prediction data:', err);
         setError('GNN prediction service unavailable. Please ensure the FastAPI backend is running.');
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        setLoading(false);
+        setInitialLoading(false);
+      });
   }, []);
 
   useEffect(() => {
@@ -323,6 +610,16 @@ export default function RiskPage() {
         if (sortBy === 'actual_delay_desc') {
           return (b.actual_delay ?? 0) - (a.actual_delay ?? 0);
         }
+        if (sortBy === 'prediction_error_desc') {
+          const errA = Math.abs((a.actual_delay ?? 0) - (a.predicted_delay ?? 0));
+          const errB = Math.abs((b.actual_delay ?? 0) - (b.predicted_delay ?? 0));
+          return errB - errA;
+        }
+        if (sortBy === 'prediction_error_asc') {
+          const errA = Math.abs((a.actual_delay ?? 0) - (a.predicted_delay ?? 0));
+          const errB = Math.abs((b.actual_delay ?? 0) - (b.predicted_delay ?? 0));
+          return errA - errB;
+        }
         if (sortBy === 'risk_desc') {
           return (b.risk ?? 0) - (a.risk ?? 0);
         }
@@ -355,7 +652,7 @@ export default function RiskPage() {
     { subject: 'Overall Severity', A: Number(overallAvg.toFixed(2)) },
   ];
 
-  if (loading) {
+  if (initialLoading && predictions.length === 0) {
     return (
       <div className="page-loading-wrap">
         <div className="spinner" />
@@ -413,7 +710,98 @@ export default function RiskPage() {
           </p>
         </div>
 
-        <div className="page-header-actions">
+        <div className="page-header-actions" style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+          {/* Live Updates Status Badge & Toggle */}
+          <div
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              background: 'rgba(15, 23, 42, 0.65)',
+              border: '1px solid rgba(148, 163, 184, 0.18)',
+              borderRadius: '8px',
+              padding: '3px 4px 3px 10px',
+              gap: '8px',
+              fontSize: '11.5px',
+            }}
+          >
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+              <span
+                style={{
+                  width: '7px',
+                  height: '7px',
+                  borderRadius: '50%',
+                  background: !liveUpdatesEnabled
+                    ? '#64748b'
+                    : liveStatus === 'processing'
+                    ? '#06b6d4'
+                    : liveStatus === 'complete'
+                    ? '#10b981'
+                    : liveStatus === 'error'
+                    ? '#ef4444'
+                    : '#22c55e',
+                  boxShadow: liveUpdatesEnabled
+                    ? liveStatus === 'processing'
+                      ? '0 0 8px #06b6d4'
+                      : liveStatus === 'complete'
+                      ? '0 0 8px #10b981'
+                      : '0 0 8px #22c55e'
+                    : 'none',
+                  display: 'inline-block',
+                }}
+              />
+              <span style={{ fontWeight: 600, color: liveUpdatesEnabled ? '#e2e8f0' : '#94a3b8' }}>
+                {!liveUpdatesEnabled
+                  ? 'Live Updates: Off'
+                  : liveStatus === 'processing'
+                  ? '↻ Live Update Processing…'
+                  : liveStatus === 'complete'
+                  ? '✓ Live Update Complete'
+                  : liveStatus === 'error'
+                  ? '⚠ Live Update Error'
+                  : '● Live Updates: Monitoring'}
+              </span>
+            </div>
+
+            <button
+              onClick={() => setLiveUpdatesEnabled((prev) => !prev)}
+              title={liveUpdatesEnabled ? 'Pause automatic live polling' : 'Resume automatic live polling'}
+              style={{
+                fontSize: '10.5px',
+                fontWeight: 700,
+                padding: '3px 8px',
+                borderRadius: '5px',
+                border: '1px solid',
+                borderColor: liveUpdatesEnabled ? 'rgba(34, 197, 94, 0.35)' : 'rgba(148, 163, 184, 0.25)',
+                background: liveUpdatesEnabled ? 'rgba(34, 197, 94, 0.12)' : 'rgba(100, 116, 139, 0.12)',
+                color: liveUpdatesEnabled ? '#4ade80' : '#94a3b8',
+                cursor: 'pointer',
+                transition: 'all 0.15s ease',
+              }}
+            >
+              {liveUpdatesEnabled ? 'ON' : 'OFF'}
+            </button>
+          </div>
+
+          <button
+            className="btn btn-primary"
+            onClick={() => handleRunRealtime({ shock_node: selectedShockNode })}
+            disabled={realtimeRunning || loading}
+            style={{
+              background: 'linear-gradient(135deg, #0284c7 0%, #06b6d4 100%)',
+              borderColor: 'rgba(6, 182, 212, 0.5)',
+              padding: '8px 16px',
+              fontSize: '12.5px',
+              fontWeight: 700,
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              boxShadow: '0 0 15px rgba(6, 182, 212, 0.25)',
+            }}
+            title="Execute end-to-end real-time disruption cycle (News → NLP → Neo4j → GNN → Ripple)"
+          >
+            <Sparkles size={14} className={realtimeRunning ? 'spin' : ''} />
+            {realtimeRunning ? 'Processing Real-Time News…' : '⚡ Process Real-Time News'}
+          </button>
           <button
             className="btn btn-outline"
             onClick={loadData}
@@ -424,6 +812,446 @@ export default function RiskPage() {
           </button>
         </div>
       </div>
+
+      {/* Real-Time Disruption Pipeline Processing Indicator */}
+      {realtimeRunning && (
+        <div
+          style={{
+            background: 'linear-gradient(90deg, rgba(6, 182, 212, 0.12) 0%, rgba(168, 85, 247, 0.12) 100%)',
+            border: '1px solid rgba(6, 182, 212, 0.4)',
+            borderRadius: '10px',
+            padding: '14px 18px',
+            marginBottom: '16px',
+            boxShadow: '0 4px 20px rgba(6, 182, 212, 0.15)',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div
+                style={{
+                  width: 28,
+                  height: 28,
+                  borderRadius: '50%',
+                  background: 'rgba(6, 182, 212, 0.2)',
+                  border: '1px solid #06b6d4',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <RefreshCw size={14} className="spin" color="#22d3ee" />
+              </div>
+              <div>
+                <div style={{ fontSize: '13.5px', fontWeight: 700, color: '#f8fafc' }}>
+                  Executing Real-Time Disruption Pipeline…
+                </div>
+                <div style={{ fontSize: '11.5px', color: '#94a3b8', marginTop: 2 }}>
+                  Ingesting news bulletin → spaCy NER entity extraction → Neo4j entity matching & graph update → GraphSAGE GNN delay prediction → Downstream ripple propagation analysis
+                </div>
+              </div>
+            </div>
+            <span
+              style={{
+                fontSize: '11px',
+                fontWeight: 700,
+                color: '#22d3ee',
+                background: 'rgba(6, 182, 212, 0.15)',
+                border: '1px solid rgba(6, 182, 212, 0.35)',
+                padding: '3px 10px',
+                borderRadius: '9999px',
+                fontFamily: 'monospace',
+              }}
+            >
+              LIVE INGESTION ACTIVE
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Real-Time Disruption Pipeline Error Alert */}
+      {realtimeError && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            background: 'rgba(239, 68, 68, 0.12)',
+            border: '1px solid rgba(239, 68, 68, 0.4)',
+            borderRadius: '8px',
+            padding: '12px 16px',
+            marginBottom: '16px',
+            color: '#fca5a5',
+            fontSize: '13px',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <AlertTriangle size={18} color="#ef4444" />
+            <div>
+              <strong>Real-Time Pipeline Error:</strong> {realtimeError}
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <button
+              onClick={() => handleRunRealtime({ shock_node: selectedShockNode })}
+              className="btn btn-outline"
+              style={{ padding: '4px 12px', fontSize: '12px', color: '#fca5a5', borderColor: 'rgba(239,68,68,0.4)' }}
+            >
+              <RefreshCw size={12} /> Retry Pipeline
+            </button>
+            <button
+              onClick={() => setRealtimeError(null)}
+              style={{ background: 'transparent', border: 'none', color: '#94a3b8', cursor: 'pointer' }}
+              title="Dismiss error"
+            >
+              <X size={16} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Real-Time Disruption Intelligence Report Card (Week 4 Feature) */}
+      {realtimeResult && showRealtimeCard && (
+        <div
+          className="dash-card"
+          style={{
+            marginBottom: 20,
+            background: 'linear-gradient(135deg, rgba(15, 23, 42, 0.95) 0%, rgba(30, 41, 59, 0.85) 100%)',
+            border: '1px solid rgba(6, 182, 212, 0.4)',
+            boxShadow: '0 8px 32px rgba(6, 182, 212, 0.12), 0 2px 10px rgba(0,0,0,0.5)',
+            borderRadius: 12,
+            padding: '18px 22px',
+          }}
+        >
+          {/* Card Top Row: Header, Badge, Duration, Close */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              flexWrap: 'wrap',
+              gap: 10,
+              borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
+              paddingBottom: 12,
+              marginBottom: 14,
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <div
+                style={{
+                  width: 32,
+                  height: 32,
+                  borderRadius: 8,
+                  background: 'rgba(6, 182, 212, 0.15)',
+                  border: '1px solid rgba(6, 182, 212, 0.4)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <Sparkles size={16} color="#06b6d4" />
+              </div>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <h3 style={{ fontSize: '15px', fontWeight: 800, color: '#f8fafc', margin: 0, letterSpacing: '-0.2px' }}>
+                    Real-Time Disruption Intelligence Report
+                  </h3>
+                  <span
+                    style={{
+                      fontSize: '10px',
+                      fontWeight: 800,
+                      color: '#22c55e',
+                      background: 'rgba(34, 197, 94, 0.15)',
+                      border: '1px solid rgba(34, 197, 94, 0.35)',
+                      borderRadius: 9999,
+                      padding: '2px 8px',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.6px',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 4,
+                    }}
+                  >
+                    <CheckCircle2 size={10} color="#22c55e" />
+                    Pipeline Completed
+                  </span>
+                  {realtimeResult.duration && (
+                    <span
+                      style={{
+                        fontSize: '10px',
+                        fontWeight: 700,
+                        color: '#38bdf8',
+                        background: 'rgba(56, 189, 248, 0.12)',
+                        border: '1px solid rgba(56, 189, 248, 0.3)',
+                        borderRadius: 9999,
+                        padding: '2px 8px',
+                        fontFamily: 'monospace',
+                      }}
+                    >
+                      {Number(realtimeResult.duration).toFixed(1)} ms
+                    </span>
+                  )}
+                </div>
+                <div style={{ fontSize: '11.5px', color: '#94a3b8', marginTop: 2 }}>
+                  Processed live news event, matched Neo4j graph entities, predicted delays with GraphSAGE GNN, and computed ripple impact.
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <button
+                onClick={() => {
+                  const rippleElem = document.querySelector('.ripple-analysis-wrapper');
+                  if (rippleElem) rippleElem.scrollIntoView({ behavior: 'smooth' });
+                }}
+                className="btn btn-outline"
+                style={{
+                  fontSize: '11px',
+                  padding: '4px 10px',
+                  borderColor: 'rgba(168, 85, 247, 0.4)',
+                  color: '#c084fc',
+                }}
+                title="Scroll down to view Ripple Effect Topology and Explainability Paths"
+              >
+                <Layers size={12} /> View in Topology
+              </button>
+              <button
+                onClick={() => setShowRealtimeCard(false)}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: '#64748b',
+                  cursor: 'pointer',
+                  padding: 4,
+                  display: 'flex',
+                  alignItems: 'center',
+                }}
+                title="Dismiss report card"
+              >
+                <X size={16} />
+              </button>
+            </div>
+          </div>
+
+          {/* Card Middle Grid: News Info & Extracted Entities */}
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
+              gap: 14,
+              marginBottom: 14,
+            }}
+          >
+            {/* News Event Info */}
+            <div
+              style={{
+                background: 'rgba(0, 0, 0, 0.35)',
+                border: '1px solid rgba(255, 255, 255, 0.06)',
+                borderRadius: 8,
+                padding: '12px 14px',
+              }}
+            >
+              <div style={{ fontSize: '10.5px', color: '#94a3b8', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 }}>
+                Ingested Disruption Event
+              </div>
+              <div style={{ fontSize: '13.5px', fontWeight: 700, color: '#f1f5f9', lineHeight: 1.35 }}>
+                {realtimeResult.processed_news?.title || 'Supply Chain Disruption Event'}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 6, fontSize: '11px', color: '#94a3b8' }}>
+                <span style={{ color: '#cbd5e1' }}>Source: <strong style={{ color: '#38bdf8' }}>{realtimeResult.processed_news?.source || 'News Feed'}</strong></span>
+                {realtimeResult.processed_news?.id && (
+                  <>
+                    <span>•</span>
+                    <span>ID: <code style={{ color: '#cbd5e1' }}>{realtimeResult.processed_news.id}</code></span>
+                  </>
+                )}
+                {realtimeResult.processed_news?.published_at && (
+                  <>
+                    <span>•</span>
+                    <span>{new Date(realtimeResult.processed_news.published_at).toLocaleDateString()}</span>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* Extracted & Matched Entities */}
+            <div
+              style={{
+                background: 'rgba(0, 0, 0, 0.35)',
+                border: '1px solid rgba(255, 255, 255, 0.06)',
+                borderRadius: 8,
+                padding: '12px 14px',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                <span style={{ fontSize: '10.5px', color: '#94a3b8', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  NLP Extracted & Neo4j Matched Entities
+                </span>
+                <span style={{ fontSize: '10px', color: '#22c55e', fontWeight: 700 }}>
+                  {realtimeResult.matched_entities?.length || 0} Entities Connected
+                </span>
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, maxHeight: 68, overflowY: 'auto' }}>
+                {(() => {
+                  const rawList =
+                    realtimeResult.matched_entities && realtimeResult.matched_entities.length > 0
+                      ? realtimeResult.matched_entities
+                      : realtimeResult.extracted_entities && realtimeResult.extracted_entities.length > 0
+                      ? realtimeResult.extracted_entities
+                      : realtimeResult.shock_origin
+                      ? [{ text: realtimeResult.shock_origin, graph_type: 'Disrupted Entity' }]
+                      : [];
+
+                  if (rawList.length === 0) {
+                    return <span style={{ fontSize: '11px', color: '#64748b' }}>No entities matched.</span>;
+                  }
+
+                  return rawList.map((m, mIdx) => {
+                    const entityName =
+                      m.text ||
+                      m.name ||
+                      m.matched_name ||
+                      m.neo4j_name ||
+                      m.graph_node ||
+                      m.graph_name ||
+                      m.entity ||
+                      (typeof m === 'string' ? m : '') ||
+                      realtimeResult.shock_origin ||
+                      '';
+
+                    const entityType =
+                      m.graph_type ||
+                      m.entity_type ||
+                      m.type ||
+                      (m.label && !['ORG', 'FAC', 'LOC', 'GPE'].includes(m.label) ? m.label : '') ||
+                      '';
+
+                    const c = (entityType && nodeTypeColors[entityType.toLowerCase()]) || '#818cf8';
+
+                    return (
+                      <span
+                        key={mIdx}
+                        style={{
+                          fontSize: '10.5px',
+                          fontWeight: 600,
+                          color: '#f8fafc',
+                          background: `${c}18`,
+                          border: `1px solid ${c}45`,
+                          borderRadius: 4,
+                          padding: '2px 7px',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 4,
+                        }}
+                      >
+                        <span style={{ width: 5, height: 5, borderRadius: '50%', background: c }} />
+                        <span>{entityName}</span>
+                        {entityType && entityType.toLowerCase() !== 'entity' && (
+                          <span style={{ fontSize: '9.5px', color: c, opacity: 0.85 }}>({entityType})</span>
+                        )}
+                      </span>
+                    );
+                  });
+                })()}
+              </div>
+            </div>
+          </div>
+
+          {/* Card Bottom KPI Bar: Shock Origin, GNN Delay, Ripple Depth, Peak Ripple */}
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+              gap: 10,
+            }}
+          >
+            {/* Shock Origin */}
+            <div
+              style={{
+                background: 'rgba(239, 68, 68, 0.08)',
+                border: '1px solid rgba(239, 68, 68, 0.3)',
+                borderRadius: 8,
+                padding: '8px 12px',
+              }}
+            >
+              <div style={{ fontSize: '10px', color: '#fca5a5', fontWeight: 700, textTransform: 'uppercase' }}>
+                Disruption Shock Origin
+              </div>
+              <div style={{ fontSize: '14px', fontWeight: 800, color: '#f8fafc', marginTop: 2 }}>
+                {realtimeResult.shock_origin || realtimeResult.ripple_origin || 'Rotterdam Port'}
+              </div>
+              <div style={{ fontSize: '10px', color: '#ef4444', marginTop: 1, fontWeight: 600 }}>
+                Neo4j Graph Node Disrupted
+              </div>
+            </div>
+
+            {/* GNN Predicted Average Delay */}
+            <div
+              style={{
+                background: 'rgba(168, 85, 247, 0.08)',
+                border: '1px solid rgba(168, 85, 247, 0.3)',
+                borderRadius: 8,
+                padding: '8px 12px',
+              }}
+            >
+              <div style={{ fontSize: '10px', color: '#c084fc', fontWeight: 700, textTransform: 'uppercase' }}>
+                GNN Avg Predicted Delay
+              </div>
+              <div style={{ fontSize: '14px', fontWeight: 800, color: '#c084fc', marginTop: 2, fontFamily: 'monospace' }}>
+                {realtimeResult.average_predicted_delay !== undefined
+                  ? `${Number(realtimeResult.average_predicted_delay).toFixed(2)} days`
+                  : '—'}
+              </div>
+              <div style={{ fontSize: '10px', color: '#94a3b8', marginTop: 1 }}>
+                Across {realtimeResult.total_predicted_nodes || predictions.length} evaluated nodes
+              </div>
+            </div>
+
+            {/* Downstream Affected Entities */}
+            <div
+              style={{
+                background: 'rgba(56, 189, 248, 0.08)',
+                border: '1px solid rgba(56, 189, 248, 0.3)',
+                borderRadius: 8,
+                padding: '8px 12px',
+              }}
+            >
+              <div style={{ fontSize: '10px', color: '#38bdf8', fontWeight: 700, textTransform: 'uppercase' }}>
+                Downstream Impacted
+              </div>
+              <div style={{ fontSize: '14px', fontWeight: 800, color: '#38bdf8', marginTop: 2, fontFamily: 'monospace' }}>
+                {realtimeResult.affected_nodes ? realtimeResult.affected_nodes.length : (realtimeResult.ripple_results?.affected_nodes?.length || 0)} Entities
+              </div>
+              <div style={{ fontSize: '10px', color: '#94a3b8', marginTop: 1 }}>
+                Max Horizon: {realtimeResult.maximum_propagation_depth ?? realtimeResult.ripple_results?.max_depth ?? 1} Hops
+              </div>
+            </div>
+
+            {/* Peak Ripple Score */}
+            <div
+              style={{
+                background: 'rgba(245, 158, 11, 0.08)',
+                border: '1px solid rgba(245, 158, 11, 0.3)',
+                borderRadius: 8,
+                padding: '8px 12px',
+              }}
+            >
+              <div style={{ fontSize: '10px', color: '#f59e0b', fontWeight: 700, textTransform: 'uppercase' }}>
+                Peak Ripple Score
+              </div>
+              <div style={{ fontSize: '14px', fontWeight: 800, color: '#f59e0b', marginTop: 2, fontFamily: 'monospace' }}>
+                {realtimeResult.affected_nodes && realtimeResult.affected_nodes.length > 0
+                  ? `${(realtimeResult.affected_nodes[0].ripple_score * 100).toFixed(0)}%`
+                  : (realtimeResult.ripple_results?.affected_nodes?.[0]
+                    ? `${(realtimeResult.ripple_results.affected_nodes[0].ripple_score * 100).toFixed(0)}%`
+                    : '—')}
+              </div>
+              <div style={{ fontSize: '10px', color: '#94a3b8', marginTop: 1 }}>
+                Hop #1 immediate downstream shock
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Backend Connection Alert */}
       {error && (
@@ -479,78 +1307,76 @@ export default function RiskPage() {
         </div>
       )}
 
-      {/* Top 4 KPI Cards */}
+      {/* Top 4 Summary Cards (GNN Evaluation & Scale) */}
       <div className="risk-kpi-grid">
-        {/* Total Predicted Nodes */}
+        {/* MAE Summary Card */}
+        <div
+          className="risk-kpi-card"
+          style={{ borderColor: 'rgba(56,189,248,0.3)', background: 'rgba(56,189,248,0.06)' }}
+        >
+          <div className="risk-kpi-top">
+            <span className="risk-kpi-lbl" style={{ color: '#38bdf8' }}>
+              MAE
+            </span>
+            <Activity size={16} color="#38bdf8" />
+          </div>
+          <div className="risk-kpi-number" style={{ color: '#38bdf8' }}>
+            {metrics?.mae !== undefined ? `${Number(metrics.mae).toFixed(4)}` : (predictionStats.meanError ? `${predictionStats.meanError}` : '—')}
+            <span style={{ fontSize: '13px', fontWeight: 600, color: '#94a3b8', marginLeft: 4 }}>days</span>
+          </div>
+          <div className="risk-kpi-desc">Mean Absolute Error</div>
+        </div>
+
+        {/* RMSE Summary Card */}
+        <div
+          className="risk-kpi-card"
+          style={{ borderColor: 'rgba(192,132,252,0.3)', background: 'rgba(192,132,252,0.06)' }}
+        >
+          <div className="risk-kpi-top">
+            <span className="risk-kpi-lbl" style={{ color: '#c084fc' }}>
+              RMSE
+            </span>
+            <TrendingDown size={16} color="#c084fc" />
+          </div>
+          <div className="risk-kpi-number" style={{ color: '#c084fc' }}>
+            {metrics?.rmse !== undefined ? `${Number(metrics.rmse).toFixed(4)}` : '—'}
+            <span style={{ fontSize: '13px', fontWeight: 600, color: '#94a3b8', marginLeft: 4 }}>days</span>
+          </div>
+          <div className="risk-kpi-desc">Root Mean Squared Error</div>
+        </div>
+
+        {/* R² Summary Card */}
+        <div
+          className="risk-kpi-card"
+          style={{ borderColor: 'rgba(74,222,128,0.3)', background: 'rgba(74,222,128,0.06)' }}
+        >
+          <div className="risk-kpi-top">
+            <span className="risk-kpi-lbl" style={{ color: '#4ade80' }}>
+              R²
+            </span>
+            <CheckCircle2 size={16} color="#4ade80" />
+          </div>
+          <div className="risk-kpi-number" style={{ color: '#4ade80' }}>
+            {metrics?.r2 !== undefined ? `${(Number(metrics.r2) * 100).toFixed(2)}%` : '—'}
+          </div>
+          <div className="risk-kpi-desc">Coefficient of Determination</div>
+        </div>
+
+        {/* Nodes Evaluated Summary Card */}
         <div
           className="risk-kpi-card"
           style={{ borderColor: 'rgba(129,140,248,0.3)', background: 'rgba(129,140,248,0.06)' }}
         >
           <div className="risk-kpi-top">
             <span className="risk-kpi-lbl" style={{ color: '#818cf8' }}>
-              TOTAL PREDICTED NODES
+              NODES EVALUATED
             </span>
             <Cpu size={16} color="#818cf8" />
           </div>
           <div className="risk-kpi-number" style={{ color: '#818cf8' }}>
-            {predictionStats.total}
+            {totalNodes || predictions.length || 0}
           </div>
-          <div className="risk-kpi-desc">GNN graph-wide node regression</div>
-        </div>
-
-        {/* Top Predicted Delay */}
-        <div
-          className="risk-kpi-card"
-          style={{ borderColor: 'rgba(239,68,68,0.3)', background: 'rgba(239,68,68,0.06)' }}
-        >
-          <div className="risk-kpi-top">
-            <span className="risk-kpi-lbl" style={{ color: '#ef4444' }}>
-              TOP PREDICTED DELAY
-            </span>
-            <Clock size={16} color="#ef4444" />
-          </div>
-          <div className="risk-kpi-number" style={{ color: '#ef4444' }}>
-            {predictionStats.maxPredictedDelay}d
-          </div>
-          <div className="risk-kpi-desc">
-            {predictionStats.maxDelayNode?.name || '—'}
-          </div>
-        </div>
-
-        {/* Average Predicted Delay */}
-        <div
-          className="risk-kpi-card"
-          style={{ borderColor: 'rgba(245,158,11,0.3)', background: 'rgba(245,158,11,0.06)' }}
-        >
-          <div className="risk-kpi-top">
-            <span className="risk-kpi-lbl" style={{ color: '#f59e0b' }}>
-              AVG PREDICTED DELAY
-            </span>
-            <TrendingDown size={16} color="#f59e0b" />
-          </div>
-          <div className="risk-kpi-number" style={{ color: '#f59e0b' }}>
-            {predictionStats.avgPredictedDelay}d
-          </div>
-          <div className="risk-kpi-desc">
-            Network mean latency (Actual: {predictionStats.avgActualDelay}d)
-          </div>
-        </div>
-
-        {/* High Delay Impact */}
-        <div
-          className="risk-kpi-card"
-          style={{ borderColor: 'rgba(220,38,38,0.3)', background: 'rgba(220,38,38,0.06)' }}
-        >
-          <div className="risk-kpi-top">
-            <span className="risk-kpi-lbl" style={{ color: '#dc2626' }}>
-              HIGH DELAY NODES
-            </span>
-            <AlertTriangle size={16} color="#dc2626" />
-          </div>
-          <div className="risk-kpi-number" style={{ color: '#dc2626' }}>
-            {predictionStats.highDelayCount}
-          </div>
-          <div className="risk-kpi-desc">Entities with ≥ {HIGH_DELAY_THRESHOLD} days predicted delay</div>
+          <div className="risk-kpi-desc">Total Graph Nodes Evaluated</div>
         </div>
       </div>
 
@@ -734,7 +1560,7 @@ export default function RiskPage() {
                     marginTop: 2,
                   }}
                 >
-                  {metrics?.r2 !== undefined ? metrics.r2 : '—'}
+                  {metrics?.r2 !== undefined ? `${(Number(metrics.r2) * 100).toFixed(2)}%` : '—'}
                 </div>
                 <div style={{ fontSize: '9px', color: '#64748b', marginTop: 1 }}>Coefficient of Determination</div>
               </div>
@@ -923,8 +1749,21 @@ export default function RiskPage() {
         </div>
       </div>
 
-      {/* Supply Chain Ripple Effect Propagation (Week 3 Feature) */}
-      <RippleAnalysisSection />
+      {/* Supply Chain Ripple Effect Propagation (Week 3 & Week 4 Real-Time Feature) */}
+      <RippleAnalysisSection
+        selectedShockNode={selectedShockNode}
+        setSelectedShockNode={handleSelectShockNode}
+        realtimeRippleData={realtimeRippleData}
+        realtimeShockNode={realtimeResult?.shock_origin || realtimeResult?.ripple_origin}
+        onRunRealtime={handleRunRealtime}
+        isPipelineRunning={realtimeRunning}
+      />
+
+      {/* Supply Chain 30 / 60 / 90-Day Forecast Horizon Section */}
+      <ForecastSection
+        selectedShockNode={selectedShockNode}
+        realtimeResult={realtimeResult}
+      />
 
       {/* Multi-Dimensional Risk Radar & Breakdown Row */}
       <div className="risk-charts-grid" style={{ marginBottom: 16 }}>
@@ -1054,6 +1893,8 @@ export default function RiskPage() {
                 <option value="predicted_delay_desc">Predicted Delay (High → Low)</option>
                 <option value="predicted_delay_asc">Predicted Delay (Low → High)</option>
                 <option value="actual_delay_desc">Actual Delay (High → Low)</option>
+                <option value="prediction_error_desc">Prediction Error (High → Low)</option>
+                <option value="prediction_error_asc">Prediction Error (Low → High)</option>
                 <option value="risk_desc">Risk Score (High → Low)</option>
                 <option value="disruption_desc">Disruption (High → Low)</option>
                 <option value="name_asc">Name (A → Z)</option>
@@ -1067,14 +1908,14 @@ export default function RiskPage() {
           <table className="custom-data-table">
             <thead>
               <tr>
-                <th>Node Name & ID</th>
-                <th>Entity Type</th>
+                <th>Node</th>
+                <th>Type</th>
                 <th>Risk</th>
                 <th>Disruption</th>
                 <th>Capacity</th>
                 <th>Actual Delay</th>
-                <th>Predicted Delay (days)</th>
-                <th>Variance</th>
+                <th>Predicted Delay</th>
+                <th>Prediction Error</th>
                 <th>Action</th>
               </tr>
             </thead>
@@ -1093,8 +1934,7 @@ export default function RiskPage() {
                   const Icon = TYPE_ICONS[type] || Globe;
                   const actual = p.actual_delay ?? 0;
                   const pred = p.predicted_delay ?? 0;
-                  const delta = Number((pred - actual).toFixed(2));
-                  const deltaSign = delta > 0 ? `+${delta}` : `${delta}`;
+                  const predictionError = Math.abs(actual - pred);
                   const riskPct = Math.round((p.risk ?? 0) * 100);
                   const capacityPct = Math.round((p.capacity ?? 0) * 100);
 
@@ -1222,7 +2062,7 @@ export default function RiskPage() {
                             color: '#38bdf8',
                           }}
                         >
-                          {actual.toFixed(1)} days
+                          {actual.toFixed(2)} days
                         </span>
                       </td>
 
@@ -1251,12 +2091,18 @@ export default function RiskPage() {
                         <span
                           style={{
                             fontFamily: 'monospace',
-                            fontSize: '11px',
+                            fontSize: '11.5px',
                             fontWeight: 700,
-                            color: Math.abs(delta) < 0.5 ? '#22c55e' : '#f59e0b',
+                            color: predictionError < 0.5 ? '#22c55e' : (predictionError < 1.0 ? '#f59e0b' : '#ef4444'),
+                            background: predictionError < 0.5 ? 'rgba(34,197,94,0.1)' : (predictionError < 1.0 ? 'rgba(245,158,11,0.1)' : 'rgba(239,68,68,0.1)'),
+                            padding: '2px 8px',
+                            borderRadius: '4px',
+                            border: `1px solid ${predictionError < 0.5 ? 'rgba(34,197,94,0.25)' : (predictionError < 1.0 ? 'rgba(245,158,11,0.25)' : 'rgba(239,68,68,0.25)')}`,
+                            display: 'inline-block',
                           }}
+                          title={`abs(${actual.toFixed(2)} - ${pred.toFixed(2)}) = ${predictionError.toFixed(4)}`}
                         >
-                          {deltaSign}d
+                          {predictionError.toFixed(2)} days
                         </span>
                       </td>
 

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   Share2,
   AlertTriangle,
@@ -20,10 +20,20 @@ import {
 import { fetchRippleNodes, simulateRipple, fetchExplainability } from '../services/api.js';
 import { nodeTypeColors } from '../data/graphData.js';
 import SupplyChainGraph from './SupplyChainGraph.jsx';
+import { useLiveWebSocket } from '../context/LiveWebSocketContext.jsx';
 
-export default function RippleAnalysisSection() {
+export default function RippleAnalysisSection({
+  selectedShockNode = 'Rotterdam Port',
+  setSelectedShockNode,
+  onSelectShockNode,
+  onSelectNode,
+  realtimeRippleData = null,
+  realtimeShockNode = null,
+  onRunRealtime = null,
+  isPipelineRunning = false,
+  liveRippleEvent = null,
+}) {
   const [candidates, setCandidates] = useState([]);
-  const [selectedNodeId, setSelectedNodeId] = useState('');
   const [decay, setDecay] = useState(0.70);
   const [loading, setLoading] = useState(false);
   const [loadingCandidates, setLoadingCandidates] = useState(true);
@@ -32,6 +42,41 @@ export default function RippleAnalysisSection() {
   const [isSplitView, setIsSplitView] = useState(false);
   const [activeTab, setActiveTab] = useState('graph'); // 'graph' | 'paths' when not in split view
 
+  const { latestProcessedEvent } = useLiveWebSocket();
+  const activeLiveEvent = liveRippleEvent || latestProcessedEvent;
+  const lastLiveSyncRef = useRef(null);
+  const lastAnalyzedTargetRef = useRef(null);
+
+  // Prop-agnostic selection updater to communicate changes back to RiskPage
+  const updateSelectedNode = useCallback(
+    (nodeName) => {
+      if (!nodeName) return;
+      if (setSelectedShockNode) {
+        setSelectedShockNode(nodeName);
+      } else if (onSelectShockNode) {
+        onSelectShockNode(nodeName);
+      } else if (onSelectNode) {
+        onSelectNode(nodeName);
+      }
+    },
+    [setSelectedShockNode, onSelectShockNode, onSelectNode]
+  );
+
+  // Dynamically resolve currently selected candidate metadata strictly from user input state
+  const selectedCandidate = useMemo(() => {
+    return (
+      candidates.find(
+        (c) =>
+          (c.name && c.name.toLowerCase() === (selectedShockNode || '').toLowerCase()) ||
+          (c.id && c.id === selectedShockNode) ||
+          (c.neo4j_id && c.neo4j_id === selectedShockNode)
+      ) || null
+    );
+  }, [candidates, selectedShockNode]);
+
+  const selectedNodeName = selectedCandidate?.name || selectedShockNode || 'Rotterdam Port';
+  const shockLabel = `${selectedNodeName} Shock`;
+
   // Fetch available simulation nodes
   const loadCandidates = useCallback(async () => {
     setLoadingCandidates(true);
@@ -39,12 +84,14 @@ export default function RippleAnalysisSection() {
       const res = await fetchRippleNodes();
       if (res?.nodes && res.nodes.length > 0) {
         setCandidates(res.nodes);
-        // Default to Rotterdam Port or the most disrupted node
-        const defaultNode =
-          res.nodes.find((n) => n.name?.toLowerCase().includes('rotterdam') || n.id === 'P003') ||
-          res.nodes[0];
-        if (defaultNode) {
-          setSelectedNodeId(defaultNode.id || defaultNode.neo4j_id || defaultNode.name);
+        // If no shock node is selected yet, initialize with Rotterdam Port or first candidate
+        if (!selectedShockNode) {
+          const defaultNode =
+            res.nodes.find((n) => n.name?.toLowerCase().includes('rotterdam') || n.id === 'P003') ||
+            res.nodes[0];
+          if (defaultNode) {
+            updateSelectedNode(defaultNode.name);
+          }
         }
       }
     } catch (err) {
@@ -52,18 +99,27 @@ export default function RippleAnalysisSection() {
     } finally {
       setLoadingCandidates(false);
     }
-  }, []);
+  }, [selectedShockNode, updateSelectedNode]);
 
   useEffect(() => {
     loadCandidates();
   }, [loadCandidates]);
 
-  // Execute ripple simulation
+  // Execute ripple simulation for a given node or the current selectedShockNode
   const handleAnalyze = useCallback(
     async (nodeToAnalyze) => {
-      const targetId = nodeToAnalyze || selectedNodeId;
-      if (!targetId) return;
+      const targetName = nodeToAnalyze || selectedCandidate?.name || selectedShockNode;
+      if (!targetName) return;
 
+      const cand = candidates.find(
+        (c) =>
+          (c.name && c.name.toLowerCase() === targetName.toLowerCase()) ||
+          (c.id && c.id === targetName) ||
+          (c.neo4j_id && c.neo4j_id === targetName)
+      );
+      const targetId = cand?.id || cand?.neo4j_id || cand?.name || targetName;
+
+      lastAnalyzedTargetRef.current = targetName.toLowerCase();
       setLoading(true);
       setError(null);
       try {
@@ -79,16 +135,46 @@ export default function RippleAnalysisSection() {
         setLoading(false);
       }
     },
-    [selectedNodeId, decay]
+    [selectedCandidate, selectedShockNode, candidates, decay]
   );
 
-  // Run initial simulation on Rotterdam Port once candidates are loaded
+  // Synchronize ripple simulation whenever selectedShockNode changes or candidates load
   useEffect(() => {
-    if (candidates.length > 0 && selectedNodeId && !rippleData && !loading) {
-      handleAnalyze(selectedNodeId);
+    if (candidates.length > 0 && selectedShockNode) {
+      const currentSourceName = rippleData?.source_node?.name;
+      const currentSourceId = rippleData?.source_node?.id || rippleData?.source_node?.neo4j_id;
+      const targetLower = selectedShockNode.toLowerCase();
+
+      const isMatchingCurrent =
+        (currentSourceName && currentSourceName.toLowerCase() === targetLower) ||
+        (currentSourceId && currentSourceId.toLowerCase() === targetLower);
+
+      if (!isMatchingCurrent && !loading && lastAnalyzedTargetRef.current !== targetLower) {
+        handleAnalyze(selectedShockNode);
+      }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [candidates]);
+  }, [selectedShockNode, candidates, handleAnalyze, rippleData, loading]);
+
+  // Dynamically update ripple data when real-time pipeline produces downstream results.
+  // CRITICAL: Real-time response data is OUTPUT data. NEVER overwrite selectedShockNode here!
+  useEffect(() => {
+    if (realtimeRippleData && realtimeRippleData.source_node) {
+      setRippleData(realtimeRippleData);
+    }
+  }, [realtimeRippleData]);
+
+  // Auto-sync ripple simulation with incoming live news disruption event (Requirement 8)
+  useEffect(() => {
+    if (activeLiveEvent?.ripple_updated && activeLiveEvent?.shock_origin) {
+      const eventKey = `${activeLiveEvent.article_id || ''}_${activeLiveEvent.shock_origin}`;
+      if (lastLiveSyncRef.current !== eventKey) {
+        lastLiveSyncRef.current = eventKey;
+        console.log('[LiveWS] Auto-updating Ripple Analysis for shock origin:', activeLiveEvent.shock_origin);
+        updateSelectedNode(activeLiveEvent.shock_origin);
+        handleAnalyze(activeLiveEvent.shock_origin);
+      }
+    }
+  }, [activeLiveEvent, updateSelectedNode, handleAnalyze]);
 
   // Map of affected node IDs for graph highlighting
   const rippleAffectedMap = useMemo(() => {
@@ -105,28 +191,6 @@ export default function RippleAnalysisSection() {
   const sourceNode = rippleData?.source_node;
   const affectedNodes = rippleData?.affected_nodes || [];
   const paths = rippleData?.paths || [];
-
-  // Dynamically resolve currently selected node metadata and shock label (Requirement 1 & 2)
-  const selectedCandidate = useMemo(() => {
-    return (
-      candidates.find(
-        (c) =>
-          (c.id && c.id === selectedNodeId) ||
-          (c.name && c.name === selectedNodeId) ||
-          (c.neo4j_id && c.neo4j_id === selectedNodeId)
-      ) ||
-      (sourceNode
-        ? {
-            name: sourceNode.name,
-            id: sourceNode.id,
-            entity_type: sourceNode.entity_type,
-          }
-        : null)
-    );
-  }, [candidates, selectedNodeId, sourceNode]);
-
-  const selectedNodeName = selectedCandidate?.name || sourceNode?.name || 'Selected Node';
-  const shockLabel = `${selectedNodeName} Shock`;
 
   return (
     <div
@@ -277,6 +341,74 @@ export default function RippleAnalysisSection() {
         </div>
       </div>
 
+      {/* Live Ripple Update Banner (Requirement 8) */}
+      {activeLiveEvent && activeLiveEvent.ripple_updated && activeLiveEvent.shock_origin && (
+        <div
+          className="live-ripple-banner"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: 12,
+            padding: '10px 16px',
+            background: 'rgba(239, 68, 68, 0.12)',
+            border: '1px solid rgba(239, 68, 68, 0.35)',
+            borderRadius: 8,
+            marginBottom: 16,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: '50%',
+                background: '#ef4444',
+                boxShadow: '0 0 8px #ef4444',
+              }}
+            />
+            <span
+              style={{
+                fontSize: '11px',
+                fontWeight: 800,
+                color: '#f87171',
+                letterSpacing: '0.8px',
+                textTransform: 'uppercase',
+              }}
+            >
+              LIVE RIPPLE UPDATE
+            </span>
+          </div>
+
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 18,
+              fontSize: '12.5px',
+              color: '#f8fafc',
+              flexWrap: 'wrap',
+            }}
+          >
+            <div>
+              <span style={{ color: '#94a3b8' }}>Shock Origin: </span>
+              <strong style={{ color: '#c084fc' }}>{activeLiveEvent.shock_origin}</strong>
+            </div>
+            <div>
+              <span style={{ color: '#94a3b8' }}>Affected Nodes: </span>
+              <strong style={{ color: '#ef4444' }}>{activeLiveEvent.affected_nodes ?? 0}</strong>
+            </div>
+            <div>
+              <span style={{ color: '#94a3b8' }}>Max Depth: </span>
+              <strong style={{ color: '#06b6d4' }}>
+                {activeLiveEvent.max_depth ?? 0} {activeLiveEvent.max_depth === 1 ? 'hop' : 'hops'}
+              </strong>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Control Bar: Selector + Decay + Analyze Button */}
       <div
         style={{
@@ -297,13 +429,13 @@ export default function RippleAnalysisSection() {
             Select Disrupted Node:
           </label>
           <select
-            value={selectedNodeId}
+            value={selectedCandidate?.name || selectedShockNode}
             onChange={(e) => {
-              const newId = e.target.value;
-              setSelectedNodeId(newId);
-              handleAnalyze(newId);
+              const newName = e.target.value;
+              updateSelectedNode(newName);
+              handleAnalyze(newName);
             }}
-            disabled={loadingCandidates || loading}
+            disabled={loadingCandidates || loading || isPipelineRunning}
             style={{
               background: 'rgba(15, 23, 42, 0.9)',
               border: '1px solid rgba(168, 85, 247, 0.4)',
@@ -318,7 +450,7 @@ export default function RippleAnalysisSection() {
             }}
           >
             {candidates.map((c) => (
-              <option key={c.neo4j_id || c.id} value={c.id || c.name}>
+              <option key={c.neo4j_id || c.id || c.name} value={c.name}>
                 {c.name} ({c.entity_type}){c.disruption >= 0.75 ? ' — [DISRUPTED]' : c.risk >= 0.3 ? ' — [AT RISK]' : ''}
               </option>
             ))}
@@ -326,8 +458,8 @@ export default function RippleAnalysisSection() {
 
           {/* Dynamic shock trigger button (Requirement 1 & 2) */}
           <button
-            onClick={() => handleAnalyze(selectedNodeId)}
-            disabled={loading || !selectedNodeId}
+            onClick={() => handleAnalyze(selectedShockNode)}
+            disabled={loading || !selectedShockNode}
             className="filter-btn-pill active"
             style={{
               fontSize: '11px',
@@ -383,9 +515,38 @@ export default function RippleAnalysisSection() {
             </span>
           </div>
 
+          {onRunRealtime && (
+            <button
+              onClick={() => {
+                const targetNode = selectedCandidate?.name || selectedShockNode;
+                console.log('[REALTIME UI] selectedShockNode =', targetNode);
+                const payload = { shock_node: targetNode };
+                console.log('[REALTIME UI] payload =', payload);
+                onRunRealtime(payload);
+              }}
+              disabled={loading || isPipelineRunning}
+              className="btn btn-outline"
+              style={{
+                borderColor: 'rgba(6, 182, 212, 0.45)',
+                background: 'rgba(6, 182, 212, 0.09)',
+                color: '#22d3ee',
+                padding: '7px 14px',
+                fontSize: '12.5px',
+                fontWeight: 700,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+              }}
+              title="Execute end-to-end real-time news ingestion, GNN prediction & ripple analysis"
+            >
+              <Sparkles size={13} className={isPipelineRunning ? 'spin' : ''} />
+              {isPipelineRunning ? 'Processing Real-Time News…' : '⚡ Process Real-Time News'}
+            </button>
+          )}
+
           <button
-            onClick={() => handleAnalyze()}
-            disabled={loading || !selectedNodeId}
+            onClick={() => handleAnalyze(selectedShockNode)}
+            disabled={loading || isPipelineRunning || !selectedShockNode}
             className="btn btn-primary"
             style={{
               background: 'linear-gradient(135deg, #7c3aed 0%, #a855f7 100%)',
