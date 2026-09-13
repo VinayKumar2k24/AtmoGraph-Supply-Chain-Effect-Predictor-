@@ -16,6 +16,7 @@ import {
   CornerDownRight,
   Sparkles,
   Columns,
+  X,
 } from 'lucide-react';
 import { fetchRippleNodes, simulateRipple, fetchExplainability } from '../services/api.js';
 import { nodeTypeColors } from '../data/graphData.js';
@@ -37,6 +38,7 @@ export default function RippleAnalysisSection({
   const [decay, setDecay] = useState(0.70);
   const [loading, setLoading] = useState(false);
   const [loadingCandidates, setLoadingCandidates] = useState(true);
+  const [candidatesError, setCandidatesError] = useState(null);
   const [rippleData, setRippleData] = useState(null);
   const [error, setError] = useState(null);
   const [isSplitView, setIsSplitView] = useState(false);
@@ -80,6 +82,7 @@ export default function RippleAnalysisSection({
   // Fetch available simulation nodes
   const loadCandidates = useCallback(async () => {
     setLoadingCandidates(true);
+    setCandidatesError(null);
     try {
       const res = await fetchRippleNodes();
       if (res?.nodes && res.nodes.length > 0) {
@@ -96,6 +99,7 @@ export default function RippleAnalysisSection({
       }
     } catch (err) {
       console.warn('Failed to load ripple candidate nodes:', err);
+      setCandidatesError(err.message || 'Unable to load simulation candidate nodes.');
     } finally {
       setLoadingCandidates(false);
     }
@@ -449,11 +453,17 @@ export default function RippleAnalysisSection({
               cursor: 'pointer',
             }}
           >
-            {candidates.map((c) => (
-              <option key={c.neo4j_id || c.id || c.name} value={c.name}>
-                {c.name} ({c.entity_type}){c.disruption >= 0.75 ? ' — [DISRUPTED]' : c.risk >= 0.3 ? ' — [AT RISK]' : ''}
-              </option>
-            ))}
+            {loadingCandidates && candidates.length === 0 ? (
+              <option value="">Loading candidate nodes…</option>
+            ) : candidates.length === 0 ? (
+              <option value="">No simulation nodes available</option>
+            ) : (
+              candidates.map((c) => (
+                <option key={c.neo4j_id || c.id || c.name} value={c.name}>
+                  {c.name} ({c.entity_type}){c.disruption >= 0.75 ? ' — [DISRUPTED]' : c.risk >= 0.3 ? ' — [AT RISK]' : ''}
+                </option>
+              ))
+            )}
           </select>
 
           {/* Dynamic shock trigger button (Requirement 1 & 2) */}
@@ -562,12 +572,69 @@ export default function RippleAnalysisSection({
         </div>
       </div>
 
-      {/* Error Alert */}
+      {/* Candidates Error Alert */}
+      {candidatesError && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 10,
+            background: 'rgba(239, 68, 68, 0.12)',
+            border: '1px solid rgba(239, 68, 68, 0.35)',
+            borderRadius: 8,
+            padding: '8px 14px',
+            marginBottom: 16,
+            color: '#fca5a5',
+            fontSize: '12.5px',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <AlertTriangle size={15} color="#ef4444" />
+            <span>Failed to load simulation nodes: {candidatesError}</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <button
+              onClick={loadCandidates}
+              style={{
+                background: 'rgba(239, 68, 68, 0.2)',
+                border: '1px solid rgba(239, 68, 68, 0.4)',
+                borderRadius: 4,
+                color: '#fff',
+                fontSize: '11px',
+                padding: '3px 8px',
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
+              }}
+            >
+              <RefreshCw size={11} /> Retry
+            </button>
+            <button
+              onClick={() => setCandidatesError(null)}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: '#fca5a5',
+                cursor: 'pointer',
+                padding: 2,
+              }}
+              title="Dismiss"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Simulation Error Alert */}
       {error && (
         <div
           style={{
             display: 'flex',
             alignItems: 'center',
+            justifyContent: 'space-between',
             gap: 10,
             background: 'rgba(239, 68, 68, 0.12)',
             border: '1px solid rgba(239, 68, 68, 0.35)',
@@ -578,8 +645,42 @@ export default function RippleAnalysisSection({
             fontSize: '12.5px',
           }}
         >
-          <AlertTriangle size={16} color="#ef4444" />
-          <span>{error}</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <AlertTriangle size={16} color="#ef4444" />
+            <span>{error}</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <button
+              onClick={() => handleAnalyze(selectedShockNode)}
+              style={{
+                background: 'rgba(239, 68, 68, 0.2)',
+                border: '1px solid rgba(239, 68, 68, 0.4)',
+                borderRadius: 4,
+                color: '#fff',
+                fontSize: '11px',
+                padding: '4px 10px',
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
+              }}
+            >
+              <RefreshCw size={12} /> Retry Simulation
+            </button>
+            <button
+              onClick={() => setError(null)}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: '#fca5a5',
+                cursor: 'pointer',
+                padding: 2,
+              }}
+              title="Dismiss"
+            >
+              <X size={14} />
+            </button>
+          </div>
         </div>
       )}
 

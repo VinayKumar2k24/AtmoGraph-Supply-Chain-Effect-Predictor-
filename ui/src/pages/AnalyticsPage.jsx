@@ -15,6 +15,8 @@ import {
   Activity,
   Layers,
   ArrowRight,
+  AlertTriangle,
+  X,
 } from 'lucide-react';
 import {
   PieChart,
@@ -60,12 +62,18 @@ const CustomTooltip = ({ active, payload }) => {
 export default function AnalyticsPage() {
   const [stats, setStats] = useState(graphStats);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
 
   const loadData = () => {
     setLoading(true);
+    setError(null);
     fetchStats()
       .then((data) => {
         if (data && data.totalNodes) setStats(data);
+      })
+      .catch((err) => {
+        console.error('Failed to load graph analytics:', err);
+        setError(err.message || 'Unable to load topology analytics from backend.');
       })
       .finally(() => setLoading(false));
   };
@@ -110,12 +118,68 @@ export default function AnalyticsPage() {
         </div>
 
         <div className="page-header-actions">
-          <button className="btn btn-outline" onClick={loadData} title="Refresh graph metrics">
-            <RefreshCw size={13} />
-            Refresh Analytics
+          <button className="btn btn-outline" onClick={loadData} disabled={loading} title="Refresh graph metrics">
+            <RefreshCw size={13} className={loading ? 'spin' : ''} />
+            {loading ? 'Refreshing…' : 'Refresh Analytics'}
           </button>
         </div>
       </div>
+
+      {/* Non-blocking Error Alert */}
+      {error && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 12,
+            background: 'rgba(239, 68, 68, 0.12)',
+            border: '1px solid rgba(239, 68, 68, 0.35)',
+            borderRadius: 8,
+            padding: '10px 16px',
+            marginBottom: 16,
+            color: '#fca5a5',
+            fontSize: '13px',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <AlertTriangle size={16} color="#ef4444" />
+            <span>{error}</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <button
+              onClick={loadData}
+              style={{
+                background: 'rgba(239, 68, 68, 0.2)',
+                border: '1px solid rgba(239, 68, 68, 0.4)',
+                borderRadius: 4,
+                color: '#fff',
+                fontSize: '11px',
+                padding: '4px 10px',
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
+              }}
+            >
+              <RefreshCw size={12} className={loading ? 'spin' : ''} /> Retry
+            </button>
+            <button
+              onClick={() => setError(null)}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: '#fca5a5',
+                cursor: 'pointer',
+                padding: 2,
+              }}
+              title="Dismiss"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Top 4 KPI Metrics */}
       <div className="analytics-kpi-grid">

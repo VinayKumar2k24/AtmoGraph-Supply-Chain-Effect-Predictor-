@@ -11,7 +11,7 @@ import {
   ReactFlowProvider,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { AlertTriangle, RefreshCw, Layers } from 'lucide-react';
+import { AlertTriangle, RefreshCw, Layers, X } from 'lucide-react';
 
 import { nodeTypeColors } from '../data/graphData.js';
 import { fetchGraph } from '../services/api.js';
@@ -677,6 +677,40 @@ function FlowCanvas({
         <GraphLegend />
       </ReactFlow>
 
+      {/* Non-blocking background error banner if error occurred while nodes already exist */}
+      {error && nodes.length > 0 && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 14,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 40,
+            background: 'rgba(239, 68, 68, 0.92)',
+            backdropFilter: 'blur(8px)',
+            color: '#fff',
+            fontSize: '12px',
+            fontWeight: 600,
+            padding: '7px 16px',
+            borderRadius: '8px',
+            boxShadow: '0 4px 18px rgba(0, 0, 0, 0.45)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+          }}
+        >
+          <AlertTriangle size={15} style={{ flexShrink: 0 }} />
+          <span>Graph Refresh Notice: {error}</span>
+          <button
+            onClick={() => setError(null)}
+            style={{ background: 'transparent', border: 'none', color: '#fff', cursor: 'pointer', padding: '2px', display: 'flex' }}
+            title="Dismiss notice"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
       {/* Loading Overlay — displays over the canvas without tearing down ReactFlow DOM */}
       {loading && (
         <div
@@ -688,15 +722,18 @@ function FlowCanvas({
             flexDirection: 'column',
             alignItems: 'center',
             justifyContent: 'center',
-            background: 'rgba(10, 15, 29, 0.78)',
-            backdropFilter: 'blur(3px)',
+            background: 'rgba(10, 15, 29, 0.82)',
+            backdropFilter: 'blur(4px)',
             zIndex: 30,
             pointerEvents: 'none',
           }}
         >
-          <div className="spinner" />
-          <div style={{ fontSize: '14px', color: '#94a3b8', marginTop: 14, fontWeight: 500 }}>
-            Loading supply-chain network...
+          <div className="spinner" style={{ width: 34, height: 34, borderWidth: 3 }} />
+          <div style={{ fontSize: '14px', color: '#f8fafc', marginTop: 14, fontWeight: 600 }}>
+            Synchronizing supply-chain topology…
+          </div>
+          <div style={{ fontSize: '11.5px', color: '#94a3b8', marginTop: 4 }}>
+            Traversing Neo4j nodes, edges, and active trade pathways
           </div>
         </div>
       )}

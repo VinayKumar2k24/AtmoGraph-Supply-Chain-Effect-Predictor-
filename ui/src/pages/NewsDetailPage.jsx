@@ -18,6 +18,8 @@ import {
   Sparkles,
   ExternalLink,
   Info,
+  AlertTriangle,
+  RefreshCw,
 } from 'lucide-react';
 import { fetchNewsById } from '../services/api.js';
 import { nodeTypeColors } from '../data/graphData.js';
@@ -63,22 +65,31 @@ export default function NewsDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  useEffect(() => {
+  const loadArticle = () => {
+    setLoading(true);
+    setError(null);
     fetchNewsById(id)
       .then((a) => {
-        if (!a) throw new Error('Intelligence event not found');
+        if (!a) throw new Error(`Intelligence event [${id}] not found in records.`);
         setArticle(a);
       })
-      .catch((e) => setError(e.message))
+      .catch((e) => setError(e.message || 'Unable to retrieve news event details.'))
       .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    loadArticle();
   }, [id]);
 
   if (loading) {
     return (
-      <div className="page-loading-wrap">
-        <div className="spinner" />
-        <div style={{ fontSize: '13px', color: '#64748b', marginTop: 12 }}>
-          Loading intelligence event data…
+      <div className="page-loading-wrap" style={{ minHeight: '50vh' }}>
+        <div className="spinner" style={{ width: 34, height: 34 }} />
+        <div style={{ fontSize: '14px', color: '#f8fafc', marginTop: 14, fontWeight: 600 }}>
+          Loading intelligence event details…
+        </div>
+        <div style={{ fontSize: '11.5px', color: '#64748b', marginTop: 4 }}>
+          Resolving NLP entities, graph mappings, and GNN ripple prediction
         </div>
       </div>
     );
@@ -86,13 +97,32 @@ export default function NewsDetailPage() {
 
   if (error || !article) {
     return (
-      <div className="empty-state-card" style={{ margin: '40px auto', maxWidth: 450 }}>
-        <XCircle size={40} color="#ef4444" />
-        <div className="empty-title">Article Not Found</div>
-        <div className="empty-desc">{error || 'Requested news intelligence record is unavailable.'}</div>
-        <Link to="/news" className="btn btn-primary" style={{ marginTop: 14 }}>
-          <ArrowLeft size={13} /> Back to News Intelligence
-        </Link>
+      <div className="empty-state-card" style={{ margin: '40px auto', maxWidth: 480, padding: '36px 24px' }}>
+        <div style={{
+          width: 48,
+          height: 48,
+          borderRadius: '50%',
+          background: 'rgba(239, 68, 68, 0.15)',
+          border: '1px solid rgba(239, 68, 68, 0.35)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          marginBottom: 12,
+        }}>
+          <AlertTriangle size={24} color="#ef4444" />
+        </div>
+        <div className="empty-title" style={{ fontSize: '16px' }}>Intelligence Article Unavailable</div>
+        <div className="empty-desc" style={{ marginTop: 6, maxWidth: 380 }}>
+          {error || `Article with ID "${id}" was not found or could not be loaded from the backend.`}
+        </div>
+        <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
+          <button onClick={loadArticle} className="btn btn-outline">
+            <RefreshCw size={13} className={loading ? 'spin' : ''} /> Retry
+          </button>
+          <Link to="/news" className="btn btn-primary">
+            <ArrowLeft size={13} /> Back to News Intelligence
+          </Link>
+        </div>
       </div>
     );
   }

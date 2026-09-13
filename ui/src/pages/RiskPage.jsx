@@ -490,7 +490,7 @@ export default function RiskPage() {
       })
       .catch((err) => {
         console.error('Failed to load GNN prediction data:', err);
-        setError('GNN prediction service unavailable. Please ensure the FastAPI backend is running.');
+        setError(err.message || 'GNN prediction service unavailable. Please ensure the FastAPI backend is running.');
       })
       .finally(() => {
         setLoading(false);
@@ -654,10 +654,13 @@ export default function RiskPage() {
 
   if (initialLoading && predictions.length === 0) {
     return (
-      <div className="page-loading-wrap">
-        <div className="spinner" />
-        <div style={{ fontSize: '13px', color: '#94a3b8', marginTop: 12, fontWeight: 500 }}>
-          Calculating GNN delay predictions & multi-tier risk metrics…
+      <div className="page-loading-wrap" style={{ minHeight: '60vh' }}>
+        <div className="spinner" style={{ width: 36, height: 36, borderWidth: 3 }} />
+        <div style={{ fontSize: '14px', color: '#f8fafc', marginTop: 16, fontWeight: 700 }}>
+          Calculating GNN Delay Predictions & Multi-Tier Risk Metrics…
+        </div>
+        <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: 6 }}>
+          Querying GraphSAGE model & aggregating supply chain topology nodes
         </div>
       </div>
     );
@@ -805,13 +808,55 @@ export default function RiskPage() {
           <button
             className="btn btn-outline"
             onClick={loadData}
+            disabled={loading}
             title="Fetch latest GNN predictions and risk scores"
           >
-            <RefreshCw size={13} />
-            Refresh Predictions
+            <RefreshCw size={13} className={loading ? 'spin' : ''} />
+            {loading ? 'Refreshing…' : 'Refresh Predictions'}
           </button>
         </div>
       </div>
+
+      {/* General GNN Prediction & Risk Service Error Alert */}
+      {error && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            background: 'rgba(239, 68, 68, 0.12)',
+            border: '1px solid rgba(239, 68, 68, 0.4)',
+            borderRadius: '8px',
+            padding: '12px 16px',
+            marginBottom: '16px',
+            color: '#fca5a5',
+            fontSize: '13px',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <AlertTriangle size={18} color="#ef4444" style={{ flexShrink: 0 }} />
+            <div>
+              <strong>GNN Prediction & Risk Service Alert:</strong> {error}
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <button
+              onClick={loadData}
+              className="btn btn-outline"
+              style={{ padding: '4px 12px', fontSize: '12px', color: '#fca5a5', borderColor: 'rgba(239,68,68,0.4)' }}
+            >
+              <RefreshCw size={12} className={loading ? 'spin' : ''} /> Retry
+            </button>
+            <button
+              onClick={() => setError(null)}
+              style={{ background: 'transparent', border: 'none', color: '#94a3b8', cursor: 'pointer' }}
+              title="Dismiss error"
+            >
+              <X size={16} />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Real-Time Disruption Pipeline Processing Indicator */}
       {realtimeRunning && (
@@ -1607,7 +1652,18 @@ export default function RiskPage() {
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: 10 }}>
-            {topPredictedDelays.slice(0, 5).map((p, idx) => {
+            {topPredictedDelays.length === 0 ? (
+              <div className="empty-state-box" style={{ padding: '24px 16px' }}>
+                <Clock size={24} color="#64748b" style={{ opacity: 0.5 }} />
+                <div style={{ fontSize: '12.5px', color: '#94a3b8', marginTop: 6, fontWeight: 600 }}>
+                  No delay predictions match the current filter
+                </div>
+                <div style={{ fontSize: '11px', color: '#64748b', marginTop: 2 }}>
+                  Try selecting 'ALL' entity types or clearing your search query.
+                </div>
+              </div>
+            ) : (
+              topPredictedDelays.slice(0, 5).map((p, idx) => {
               const type = getEntityType(p);
               const c = nodeTypeColors[type.toLowerCase()] || '#818cf8';
               const Icon = TYPE_ICONS[type] || Globe;
@@ -1744,7 +1800,7 @@ export default function RiskPage() {
                   </div>
                 </div>
               );
-            })}
+            }))}
           </div>
         </div>
       </div>
@@ -1924,7 +1980,26 @@ export default function RiskPage() {
                 <tr>
                   <td colSpan="9" style={{ textAlign: 'center', padding: '36px 16px', color: '#64748b' }}>
                     <ShieldAlert size={28} style={{ margin: '0 auto 8px', display: 'block', opacity: 0.4 }} />
-                    <div>{predictions.length === 0 ? 'No GNN predictions available.' : 'No entities matched your search and filter criteria.'}</div>
+                    <div style={{ color: '#cbd5e1', fontWeight: 600, fontSize: '13px' }}>
+                      {predictions.length === 0 ? 'No GNN predictions available from backend.' : 'No entities matched your search and filter criteria.'}
+                    </div>
+                    {predictions.length === 0 ? (
+                      <button
+                        onClick={loadData}
+                        className="btn btn-primary"
+                        style={{ marginTop: 12, fontSize: '11px', padding: '4px 12px' }}
+                      >
+                        <RefreshCw size={11} className={loading ? 'spin' : ''} /> Retry Loading Predictions
+                      </button>
+                    ) : (search || typeFilter !== 'ALL') ? (
+                      <button
+                        onClick={() => { setSearch(''); setTypeFilter('ALL'); }}
+                        className="btn btn-outline"
+                        style={{ marginTop: 10, fontSize: '11px', padding: '3px 10px' }}
+                      >
+                        Clear Filters
+                      </button>
+                    ) : null}
                   </td>
                 </tr>
               ) : (

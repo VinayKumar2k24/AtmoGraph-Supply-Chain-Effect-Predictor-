@@ -158,6 +158,15 @@ export default function GraphPage() {
             </button>
           )}
 
+          <button
+            className="btn btn-outline"
+            onClick={() => setGraphKey((k) => k + 1)}
+            title="Reload graph data from backend"
+          >
+            <RefreshCw size={13} />
+            Reload Graph
+          </button>
+
           <button className="btn btn-outline" onClick={handleResetLayout} title="Auto-arrange nodes to logical hierarchical layout">
             <RefreshCw size={13} />
             Reset Layout

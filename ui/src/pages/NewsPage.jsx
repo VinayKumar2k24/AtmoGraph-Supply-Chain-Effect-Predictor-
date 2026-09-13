@@ -12,6 +12,7 @@ import {
   SlidersHorizontal,
   Sparkles,
   Layers,
+  X,
 } from 'lucide-react';
 import { fetchNews } from '../services/api.js';
 import { nodeTypeColors } from '../data/graphData.js';
@@ -77,15 +78,21 @@ function EntityPill({ entity }) {
 export default function NewsPage() {
   const [articles, setArticles] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [search, setSearch] = useState('');
   const [riskFilter, setRiskFilter] = useState('ALL');
   const [entityFilter, setEntityFilter] = useState('ALL');
 
   const loadData = () => {
     setLoading(true);
+    setError(null);
     fetchNews()
       .then((d) => setArticles(d.articles || []))
-      .catch(() => setArticles([]))
+      .catch((err) => {
+        console.error('Failed to load news articles:', err);
+        setError(err.message || 'Unable to connect to live news intelligence service.');
+        setArticles([]);
+      })
       .finally(() => setLoading(false));
   };
 
@@ -128,12 +135,58 @@ export default function NewsPage() {
         </div>
 
         <div className="page-header-actions">
-          <button className="btn btn-outline" onClick={loadData} title="Refresh intelligence feed">
-            <RefreshCw size={13} />
-            Refresh Feed
+          <button
+            className="btn btn-outline"
+            onClick={loadData}
+            disabled={loading}
+            title="Refresh intelligence feed"
+          >
+            <RefreshCw size={13} className={loading ? 'spin' : ''} />
+            {loading ? 'Refreshing…' : 'Refresh Feed'}
           </button>
         </div>
       </div>
+
+      {/* Non-blocking Error Banner */}
+      {error && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            background: 'rgba(239, 68, 68, 0.12)',
+            border: '1px solid rgba(239, 68, 68, 0.35)',
+            borderRadius: '8px',
+            padding: '10px 16px',
+            marginBottom: '16px',
+            color: '#fca5a5',
+            fontSize: '13px',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <AlertTriangle size={16} color="#ef4444" style={{ flexShrink: 0 }} />
+            <span>
+              <strong>News Feed Alert:</strong> {error}
+            </span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <button
+              onClick={loadData}
+              className="btn btn-outline"
+              style={{ padding: '4px 10px', fontSize: '12px', color: '#fca5a5', borderColor: 'rgba(239,68,68,0.4)' }}
+            >
+              <RefreshCw size={12} className={loading ? 'spin' : ''} /> Retry
+            </button>
+            <button
+              onClick={() => setError(null)}
+              style={{ background: 'transparent', border: 'none', color: '#94a3b8', cursor: 'pointer' }}
+              title="Dismiss alert"
+            >
+              <X size={15} />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Pipeline Infographic Banner */}
       <div className="pipeline-banner-card">
@@ -218,30 +271,49 @@ export default function NewsPage() {
       {/* Articles List */}
       <div className="news-cards-container">
         {loading ? (
-          <div className="page-loading-wrap">
-            <div className="spinner" />
-            <div style={{ fontSize: '13px', color: '#64748b', marginTop: 12 }}>
+          <div className="page-loading-wrap" style={{ minHeight: '40vh' }}>
+            <div className="spinner" style={{ width: 34, height: 34 }} />
+            <div style={{ fontSize: '13.5px', color: '#f8fafc', marginTop: 14, fontWeight: 600 }}>
               Scanning intelligence feeds…
+            </div>
+            <div style={{ fontSize: '11.5px', color: '#64748b', marginTop: 4 }}>
+              Loading structured articles, extracted NER entities, and graph risk annotations
             </div>
           </div>
         ) : filtered.length === 0 ? (
-          <div className="empty-state-card">
-            <Newspaper size={36} color="#334155" />
-            <div className="empty-title">No matching supply chain intelligence events</div>
-            <div className="empty-desc">
-              Try adjusting your search query or risk filters to view all monitored events.
+          <div className="empty-state-card" style={{ margin: '20px 0' }}>
+            <Newspaper size={36} color="#64748b" style={{ opacity: 0.5 }} />
+            <div className="empty-title">
+              {articles.length === 0
+                ? 'No supply chain intelligence events found'
+                : 'No matching supply chain intelligence events'}
             </div>
-            <button
-              className="btn btn-outline"
-              style={{ marginTop: 12 }}
-              onClick={() => {
-                setSearch('');
-                setRiskFilter('ALL');
-                setEntityFilter('ALL');
-              }}
-            >
-              Clear All Filters
-            </button>
+            <div className="empty-desc">
+              {articles.length === 0
+                ? (error || 'No news articles have been loaded or ingested yet. Click Refresh to scan live feeds.')
+                : 'Try adjusting your search query or risk filters to view all monitored events.'}
+            </div>
+            {articles.length === 0 ? (
+              <button
+                className="btn btn-primary"
+                style={{ marginTop: 14 }}
+                onClick={loadData}
+              >
+                <RefreshCw size={12} className={loading ? 'spin' : ''} /> Refresh Intelligence Feeds
+              </button>
+            ) : (
+              <button
+                className="btn btn-outline"
+                style={{ marginTop: 12 }}
+                onClick={() => {
+                  setSearch('');
+                  setRiskFilter('ALL');
+                  setEntityFilter('ALL');
+                }}
+              >
+                Clear All Filters
+              </button>
+            )}
           </div>
         ) : (
           filtered.map((article) => (
