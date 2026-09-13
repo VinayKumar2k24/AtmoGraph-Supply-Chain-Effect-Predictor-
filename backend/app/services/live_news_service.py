@@ -18,7 +18,9 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Set
+import email.utils
 import urllib.request
+import urllib.parse
 import xml.etree.ElementTree as ET
 
 # Ensure project root is in sys.path
@@ -104,13 +106,198 @@ def clean_html(raw_html: str) -> str:
     if not raw_html:
         return ""
     # Strip script and style blocks
-    text = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", raw_html, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", str(raw_html), flags=re.DOTALL | re.IGNORECASE)
     # Strip general HTML tags
     text = re.sub(r"<[^>]+>", " ", text)
     # Decode entities like &amp;, &quot;, &#39;
     text = html.unescape(text)
+    if "&" in text:
+        text = html.unescape(text)
+    text = text.replace("\xa0", " ")
+    # Strip zero-width / invisible control characters
+    text = re.sub(r"[\u200b\u200c\u200d\u200e\u200f\ufeff]", "", text)
     # Collapse multiple whitespaces
     return re.sub(r"\s+", " ", text).strip()
+
+
+def normalize_title(raw_title: Optional[str]) -> str:
+    """
+    Normalizes article headline/title:
+    - Cleans HTML markup and unescapes entities.
+    - Removes zero-width and invisible control characters.
+    - Strips surrounding quotes, brackets, and extraneous whitespace.
+    """
+    if not raw_title:
+        return ""
+    title = clean_html(str(raw_title))
+    # Strip surrounding quotes if wrapped
+    if (title.startswith('"') and title.endswith('"')) or (title.startswith("'") and title.endswith("'")):
+        title = title[1:-1].strip()
+    return title
+
+
+def normalize_source(raw_source: Any, default: str = "Live News Feed") -> str:
+    """
+    Normalizes publisher/source name:
+    - Safely handles string or dict input (e.g. feedparser source metadata).
+    - Cleans HTML and extraneous whitespace.
+    - Falls back to default if empty or generic placeholder.
+    """
+    if not raw_source:
+        return default
+
+    if isinstance(raw_source, dict):
+        source_val = (
+            raw_source.get("title")
+            or raw_source.get("value")
+            or raw_source.get("name")
+            or ""
+        )
+    else:
+        source_val = str(raw_source)
+
+    source = clean_html(source_val)
+    if not source or source.lower() in ("none", "unknown", "null", "undefined", "n/a"):
+        return default
+
+    return source
+
+
+def normalize_url(raw_url: Optional[str]) -> str:
+    """
+    Normalizes article URL:
+    - Strips whitespace, control characters, and surrounding quotes/brackets.
+    - Resolves protocol-relative URLs (//example.com -> https://example.com).
+    - Unescapes HTML entities in query string.
+    - Strips common marketing/tracking parameters (utm_*, fbclid, etc.) to produce canonical URLs.
+    """
+    if not raw_url:
+        return ""
+
+    url = str(raw_url).strip()
+    # Strip wrapping quotes or brackets
+    url = re.sub(r"^[\"\'<(\[]+|[\"'>)\]]+$", "", url).strip()
+    if not url:
+        return ""
+
+    url = html.unescape(url).strip()
+    if url.startswith("//"):
+        url = "https:" + url
+
+    try:
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme and parsed.netloc:
+            query_pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+            filtered_pairs = [
+                (k, v) for k, v in query_pairs
+                if not k.lower().startswith("utm_")
+                and k.lower() not in ("fbclid", "gclid", "_hsenc", "_hsmi", "mc_cid", "mc_eid")
+            ]
+            clean_query = urllib.parse.urlencode(filtered_pairs)
+            path = parsed.path.rstrip("/") if (parsed.path and parsed.path != "/") else parsed.path
+            clean_url = urllib.parse.urlunparse((
+                parsed.scheme.lower(),
+                parsed.netloc.lower(),
+                path,
+                parsed.params,
+                clean_query,
+                parsed.fragment,
+            ))
+            return clean_url
+    except Exception:
+        pass
+
+    return url
+
+
+def normalize_description(raw_text: Optional[str], title: str = "") -> str:
+    """
+    Normalizes news description/content:
+    - Cleans HTML markup, tags, scripts, and unescapes entities.
+    - Collapses whitespace and removes zero-width characters.
+    - Contextually incorporates title if not present, ensuring clean punctuation.
+    """
+    cleaned = clean_html(str(raw_text or ""))
+    norm_title = str(title or "").strip()
+
+    if not cleaned:
+        return norm_title
+    if not norm_title:
+        return cleaned
+
+    # Check if headline is already part of the description
+    if norm_title.lower() in cleaned.lower():
+        return cleaned
+
+    # Contextually prepend title if it adds essential supply-chain context
+    if norm_title.rstrip().endswith((".", "!", "?", ":", ";")):
+        return f"{norm_title} {cleaned}".strip()
+    else:
+        return f"{norm_title}. {cleaned}".strip()
+
+
+def normalize_timestamp(raw_timestamp: Any) -> str:
+    """
+    Normalizes publication timestamps into standard ISO-8601 UTC string.
+    Safely handles None, empty strings, RFC-822 / RFC-2822 dates, ISO-8601 strings,
+    and time.struct_time tuples.
+    """
+    if raw_timestamp is None:
+        return datetime.now(timezone.utc).isoformat()
+
+    if isinstance(raw_timestamp, datetime):
+        if raw_timestamp.tzinfo is None:
+            raw_timestamp = raw_timestamp.replace(tzinfo=timezone.utc)
+        return raw_timestamp.astimezone(timezone.utc).isoformat()
+
+    if isinstance(raw_timestamp, (time.struct_time, tuple)):
+        try:
+            return datetime(*raw_timestamp[:6], tzinfo=timezone.utc).isoformat()
+        except Exception:
+            pass
+
+    if isinstance(raw_timestamp, str):
+        ts_str = raw_timestamp.strip()
+        if not ts_str:
+            return datetime.now(timezone.utc).isoformat()
+
+        # 1. Try ISO-8601 parsing
+        try:
+            clean_iso = ts_str.replace("Z", "+00:00") if ts_str.endswith("Z") else ts_str
+            dt = datetime.fromisoformat(clean_iso)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc).isoformat()
+        except Exception:
+            pass
+
+        # 2. Try RFC-2822 / RFC-822 (standard RSS pubDate format)
+        try:
+            dt = email.utils.parsedate_to_datetime(ts_str)
+            if dt is not None:
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt.astimezone(timezone.utc).isoformat()
+        except Exception:
+            pass
+
+        # 3. Fallback common date formats
+        for fmt in (
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M:%SZ",
+            "%Y-%m-%d",
+            "%d %b %Y %H:%M:%S",
+            "%d %b %Y %H:%M:%S %z",
+        ):
+            try:
+                dt = datetime.strptime(ts_str, fmt)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt.astimezone(timezone.utc).isoformat()
+            except Exception:
+                continue
+
+    return datetime.now(timezone.utc).isoformat()
 
 
 # =============================================================================
@@ -162,6 +349,7 @@ class LiveNewsService:
         # In-memory deduplication registries
         self._processed_ids: Set[str] = set()
         self._seen_hashes: Set[str] = set()
+        self._seen_urls: Set[str] = set()
 
         # Injected mock/custom articles queue for testing
         self._mock_articles: List[Dict[str, Any]] = []
@@ -178,23 +366,43 @@ class LiveNewsService:
     @staticmethod
     def compute_content_hash(title: str, text: str) -> str:
         """Computes a SHA-256 fingerprint from title and content to catch duplicates."""
-        normalized = f"{title.strip().lower()}|{text.strip().lower()}"
+        norm_title = " ".join(str(title or "").split()).strip().lower()
+        norm_text = " ".join(str(text or "").split()).strip().lower()
+        normalized = f"{norm_title}|{norm_text}"
         return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
-    def is_processed(self, article_id: str, title: str = "", text: str = "") -> bool:
+    def is_processed(
+        self,
+        article_id: str,
+        title: str = "",
+        text: str = "",
+        url: str = "",
+    ) -> bool:
         """Checks whether an article has already been processed."""
-        if article_id and article_id in self._processed_ids:
+        clean_id = str(article_id or "").strip()
+        if clean_id and clean_id in self._processed_ids:
             return True
+
+        clean_url = normalize_url(url)
+        if clean_url and clean_url in self._seen_urls:
+            return True
+
         if title or text:
             content_hash = self.compute_content_hash(title, text)
             if content_hash in self._seen_hashes:
                 return True
+
         return False
 
-    def mark_processed(self, article_id: str, article: Optional[Dict[str, Any]] = None):
+    def mark_processed(
+        self,
+        article_id: str,
+        article: Optional[Dict[str, Any]] = None,
+    ):
         """Marks an article ID and content hash as processed in memory."""
-        if article_id:
-            self._processed_ids.add(str(article_id).strip())
+        clean_id = str(article_id or "").strip()
+        if clean_id:
+            self._processed_ids.add(clean_id)
 
         if article:
             title = article.get("title", "")
@@ -203,10 +411,15 @@ class LiveNewsService:
                 content_hash = self.compute_content_hash(title, text)
                 self._seen_hashes.add(content_hash)
 
+            clean_url = normalize_url(article.get("url", ""))
+            if clean_url:
+                self._seen_urls.add(clean_url)
+
     def reset_processed(self):
         """Resets deduplication cache (useful for tests or demo resets)."""
         self._processed_ids.clear()
         self._seen_hashes.clear()
+        self._seen_urls.clear()
         logger.info("LiveNewsService: Deduplication cache reset.")
 
     def add_mock_article(self, article: Dict[str, Any]):
@@ -218,25 +431,31 @@ class LiveNewsService:
     # ─────────────────────────────────────────────────────────────────────────
 
     def _fetch_rss_raw(self, url: str) -> Optional[str]:
-        """Fetches raw RSS XML using requests or urllib with standard headers."""
+        """Fetches raw RSS XML using requests or urllib with standard headers and cache-busting."""
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AtmoGraph/1.0",
             "Accept": "application/rss+xml, application/xml, text/xml, */*",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
         }
+
+        # Cache-busting timestamp query parameter to bypass stale caching
+        sep = "&" if "?" in url else "?"
+        bust_url = f"{url}{sep}_ts={int(time.time())}"
 
         try:
             if HAS_REQUESTS:
-                resp = requests.get(url, headers=headers, timeout=self.timeout)
+                resp = requests.get(bust_url, headers=headers, timeout=self.timeout)
                 if resp.status_code == 200:
                     return resp.text
-                logger.warning(f"HTTP {resp.status_code} received when fetching RSS feed from {url}")
+                logger.warning(f"HTTP {resp.status_code} received when fetching RSS feed from {bust_url}")
                 return None
             else:
-                req = urllib.request.Request(url, headers=headers)
+                req = urllib.request.Request(bust_url, headers=headers)
                 with urllib.request.urlopen(req, timeout=self.timeout) as response:
                     return response.read().decode("utf-8", errors="replace")
         except Exception as e:
-            logger.warning(f"Network error while fetching RSS feed from {url}: {e}")
+            logger.warning(f"Network error while fetching RSS feed from {bust_url}: {e}")
             return None
 
     def _parse_with_feedparser(self, xml_content_or_url: str) -> List[Dict[str, Any]]:
@@ -247,56 +466,74 @@ class LiveNewsService:
             return []
 
         articles = []
-        feed_title = feed.feed.get("title", "Live RSS Feed") if hasattr(feed, "feed") else "Live RSS Feed"
+        raw_feed_title = feed.feed.get("title") if hasattr(feed, "feed") else "Live RSS Feed"
+        feed_title = normalize_source(raw_feed_title, default="Live RSS Feed")
 
         for entry in feed.entries:
-            title = clean_html(getattr(entry, "title", ""))
-            raw_text = getattr(entry, "summary", "") or getattr(entry, "description", "") or ""
-            text = clean_html(raw_text)
+            raw_title = getattr(entry, "title", "")
+            title = normalize_title(raw_title)
 
-            # Require either title or text
-            if not title and not text:
+            raw_text = (
+                getattr(entry, "summary", "")
+                or getattr(entry, "description", "")
+                or ""
+            )
+            # Check content list if description/summary is missing
+            if not raw_text and hasattr(entry, "content") and entry.content:
+                if isinstance(entry.content, list) and len(entry.content) > 0:
+                    raw_text = entry.content[0].get("value", "")
+
+            # Safely handle missing title or text
+            if not title and not raw_text:
                 continue
 
             if not title:
-                title = text[:80] + "..." if len(text) > 80 else text
+                cleaned_desc = clean_html(raw_text)
+                title = cleaned_desc[:80] + "..." if len(cleaned_desc) > 80 else cleaned_desc
+                title = normalize_title(title)
 
-            # Combine title into text if headline contains essential entity context
-            full_text = text
-            if title and title.lower() not in text.lower():
-                full_text = f"{title}. {text}".strip()
+            full_text = normalize_description(raw_text, title=title)
             if not full_text:
                 full_text = title
+
+            # Normalize URL / Link
+            raw_url = (
+                getattr(entry, "link", "")
+                or (entry.links[0].get("href", "") if hasattr(entry, "links") and entry.links else "")
+            )
+            url = normalize_url(raw_url)
 
             # Determine stable ID
             raw_id = (
                 getattr(entry, "id", "")
                 or getattr(entry, "guid", "")
+                or url
                 or getattr(entry, "link", "")
-                or f"RSS_{self.compute_content_hash(title, text)[:12]}"
+                or f"RSS_{self.compute_content_hash(title, full_text)[:12]}"
             )
-            article_id = f"NEWS_LIVE_{hashlib.md5(raw_id.encode('utf-8')).hexdigest()[:10]}"
+            article_id = f"NEWS_LIVE_{hashlib.md5(str(raw_id).strip().encode('utf-8')).hexdigest()[:10]}"
 
-            # Published timestamp
-            published_at = datetime.now(timezone.utc).isoformat()
-            if hasattr(entry, "published_parsed") and entry.published_parsed:
-                try:
-                    published_at = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc).isoformat()
-                except Exception:
-                    pass
-
-            source = (
-                getattr(entry, "source", {}).get("title")
-                if isinstance(getattr(entry, "source", None), dict)
-                else getattr(entry, "author", None) or feed_title
+            # Normalize publication timestamp
+            published_val = (
+                getattr(entry, "published_parsed", None)
+                or getattr(entry, "updated_parsed", None)
+                or getattr(entry, "published", None)
+                or getattr(entry, "updated", None)
             )
+            published_at = normalize_timestamp(published_val)
+
+            # Normalize source
+            raw_source = getattr(entry, "source", None)
+            author = getattr(entry, "author", None)
+            source = normalize_source(raw_source or author or feed_title, default=feed_title)
 
             articles.append({
                 "id": article_id,
                 "title": title,
                 "text": full_text,
-                "source": str(source or "Live News Feed"),
+                "source": source,
                 "published_at": published_at,
+                "url": url,
             })
 
         return articles
@@ -316,14 +553,15 @@ class LiveNewsService:
         if channel is not None:
             t_node = channel.find("title")
             if t_node is not None and t_node.text:
-                feed_title = t_node.text.strip()
+                feed_title = normalize_source(t_node.text, default="Live RSS Feed")
             items = channel.findall("item")
         else:
             items = root.findall(".//{http://www.w3.org/2005/Atom}entry") or root.findall("item")
 
         for item in items:
             title_node = item.find("title") or item.find("{http://www.w3.org/2005/Atom}title")
-            title = clean_html(title_node.text if title_node is not None and title_node.text else "")
+            raw_title = title_node.text if title_node is not None and title_node.text else ""
+            title = normalize_title(raw_title)
 
             desc_node = (
                 item.find("description")
@@ -331,42 +569,61 @@ class LiveNewsService:
                 or item.find("{http://www.w3.org/2005/Atom}content")
             )
             raw_text = desc_node.text if desc_node is not None and desc_node.text else ""
-            text = clean_html(raw_text)
 
-            if not title and not text:
+            if not title and not raw_text:
                 continue
 
             if not title:
-                title = text[:80] + "..." if len(text) > 80 else text
+                cleaned_desc = clean_html(raw_text)
+                title = cleaned_desc[:80] + "..." if len(cleaned_desc) > 80 else cleaned_desc
+                title = normalize_title(title)
 
-            full_text = text
-            if title and title.lower() not in text.lower():
-                full_text = f"{title}. {text}".strip()
+            full_text = normalize_description(raw_text, title=title)
             if not full_text:
                 full_text = title
 
+            # Normalize URL / Link
+            link_node = item.find("link") or item.find("{http://www.w3.org/2005/Atom}link")
+            raw_url = ""
+            if link_node is not None:
+                raw_url = link_node.text.strip() if link_node.text else (link_node.get("href") or "").strip()
+            url = normalize_url(raw_url)
+
+            # Determine stable ID
             guid_node = (
                 item.find("guid")
-                or item.find("link")
                 or item.find("{http://www.w3.org/2005/Atom}id")
             )
             raw_id = (guid_node.text.strip() if guid_node is not None and guid_node.text else "")
             if not raw_id:
-                raw_id = f"ET_{self.compute_content_hash(title, text)[:12]}"
+                raw_id = url or raw_url or f"ET_{self.compute_content_hash(title, full_text)[:12]}"
 
-            article_id = f"NEWS_LIVE_{hashlib.md5(raw_id.encode('utf-8')).hexdigest()[:10]}"
+            article_id = f"NEWS_LIVE_{hashlib.md5(str(raw_id).strip().encode('utf-8')).hexdigest()[:10]}"
 
-            pub_node = item.find("pubDate") or item.find("{http://www.w3.org/2005/Atom}published")
-            published_at = datetime.now(timezone.utc).isoformat()
-            if pub_node is not None and pub_node.text:
-                published_at = pub_node.text.strip()
+            pub_node = (
+                item.find("pubDate")
+                or item.find("{http://www.w3.org/2005/Atom}published")
+                or item.find("{http://www.w3.org/2005/Atom}updated")
+            )
+            raw_pub = pub_node.text.strip() if pub_node is not None and pub_node.text else None
+            published_at = normalize_timestamp(raw_pub)
+
+            source_node = item.find("source") or item.find("{http://www.w3.org/2005/Atom}source")
+            author_node = item.find("author") or item.find("{http://www.w3.org/2005/Atom}author")
+            raw_src = (
+                (source_node.text.strip() if source_node is not None and source_node.text else "")
+                or (author_node.text.strip() if author_node is not None and author_node.text else "")
+                or feed_title
+            )
+            source = normalize_source(raw_src, default=feed_title)
 
             articles.append({
                 "id": article_id,
                 "title": title,
                 "text": full_text,
-                "source": feed_title,
+                "source": source,
                 "published_at": published_at,
+                "url": url,
             })
 
         return articles
@@ -394,12 +651,12 @@ class LiveNewsService:
         # 2. If explicit demo mode, return curated demo articles
         if self.demo_mode:
             logger.info("LiveNewsService: Returning curated demo supply-chain articles.")
-            return list(DEMO_ARTICLES)
+            return [dict(a) for a in DEMO_ARTICLES]
 
         # 3. Fetch from remote RSS feed
         feed_url = self.feed_url
         if not feed_url or str(feed_url).lower() == "demo":
-            return list(DEMO_ARTICLES)
+            return [dict(a) for a in DEMO_ARTICLES]
 
         logger.info(f"LiveNewsService: Fetching live news from {feed_url}")
         xml_content = self._fetch_rss_raw(feed_url)
@@ -410,16 +667,15 @@ class LiveNewsService:
             if not results:
                 results = self._parse_with_elementtree(xml_content)
 
-        # 4. Safe fallback if remote fetch failed or returned 0 articles
+        # 4. Handle case where remote fetch returned 0 articles
         if not results:
-            if self.fallback_to_demo:
-                logger.warning(
-                    f"LiveNewsService: Unable to parse remote feed from {feed_url}. "
-                    "Falling back to built-in demo disruption articles."
+            if self.demo_mode or self.fallback_to_demo:
+                logger.info(
+                    "LiveNewsService: Demo mode or fallback active. Returning built-in demo articles."
                 )
-                return list(DEMO_ARTICLES)
+                return [dict(a) for a in DEMO_ARTICLES]
             else:
-                logger.info(f"LiveNewsService: No articles found from {feed_url}.")
+                logger.info(f"LiveNewsService: 0 articles found from {feed_url}. Monitoring continuously.")
                 return []
 
         logger.info(f"LiveNewsService: Successfully parsed {len(results)} articles from feed.")
@@ -435,14 +691,34 @@ class LiveNewsService:
         """
         all_articles = self.fetch_latest_news()
         new_articles = []
+        batch_seen_ids: Set[str] = set()
+        batch_seen_hashes: Set[str] = set()
+        batch_seen_urls: Set[str] = set()
 
         for article in all_articles:
-            art_id = article.get("id", "")
+            art_id = str(article.get("id", "")).strip()
             title = article.get("title", "")
             text = article.get("text", "")
+            url = normalize_url(article.get("url", ""))
 
-            if self.is_processed(art_id, title=title, text=text):
+            content_hash = self.compute_content_hash(title, text) if (title or text) else ""
+
+            # Intra-batch duplicate check
+            if (art_id and art_id in batch_seen_ids) or \
+               (content_hash and content_hash in batch_seen_hashes) or \
+               (url and url in batch_seen_urls):
                 continue
+
+            # Historical duplicate check
+            if self.is_processed(art_id, title=title, text=text, url=url):
+                continue
+
+            if art_id:
+                batch_seen_ids.add(art_id)
+            if content_hash:
+                batch_seen_hashes.add(content_hash)
+            if url:
+                batch_seen_urls.add(url)
 
             new_articles.append(article)
 
