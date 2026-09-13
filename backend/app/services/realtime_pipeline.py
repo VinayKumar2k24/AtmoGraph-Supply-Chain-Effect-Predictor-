@@ -56,6 +56,155 @@ class RealtimePipeline:
         self.news_graph_service = NewsGraphService()
         self.entity_matcher = EntityMatcher()
 
+    def validate_and_normalize_input(
+        self,
+        news_input: Union[str, Path, Dict[str, Any]],
+        timestamp_iso: str,
+    ) -> Dict[str, Any]:
+        """
+        Validates and normalizes incoming news input from supported formats:
+        - file path (str or Path)
+        - dictionary
+        - raw text string
+        
+        Ensures usable title/text content is present and returns a standardized raw_news dict.
+        Raises ValueError with clear message if input is invalid or malformed.
+        """
+        if news_input is None:
+            raise ValueError("Invalid news input: news_input cannot be None.")
+
+        if isinstance(news_input, Path):
+            if not news_input.is_file():
+                raise ValueError(f"Invalid news input: Specified file path does not exist: {news_input}")
+            try:
+                raw_news = self.news_service.load_news(str(news_input))
+            except Exception as load_err:
+                raise ValueError(f"Invalid news input: Failed to parse news file '{news_input}': {load_err}")
+
+        elif isinstance(news_input, str):
+            clean_str = news_input.strip()
+            if not clean_str:
+                raise ValueError("Invalid news input: Empty news text provided.")
+
+            # Check if string is an existing file path
+            possible_path = Path(clean_str)
+            if possible_path.is_file():
+                try:
+                    raw_news = self.news_service.load_news(str(possible_path))
+                except Exception as load_err:
+                    raise ValueError(f"Invalid news input: Failed to parse news file '{clean_str}': {load_err}")
+            elif clean_str.endswith((".json", ".xml")) and ("/" in clean_str or "\\" in clean_str):
+                # Looks like a path to a file that does not exist
+                raise ValueError(f"Invalid news input: News file does not exist: {clean_str}")
+            else:
+                # Treat as raw text
+                if len(clean_str) < 5:
+                    raise ValueError(
+                        f"Invalid news input: Raw text content is too short to process ({len(clean_str)} chars)."
+                    )
+                raw_news = {
+                    "id": f"NEWS_CUSTOM_{int(time.time())}",
+                    "title": "Real-time Disruption Event",
+                    "source": "AtmoGraph Live Feed",
+                    "published_at": timestamp_iso,
+                    "text": clean_str,
+                }
+
+        elif isinstance(news_input, dict):
+            if not news_input:
+                raise ValueError("Invalid news input: News dictionary is empty.")
+
+            raw_title = str(news_input.get("title") or "").strip()
+            raw_text = str(news_input.get("text") or "").strip()
+
+            if not raw_text and not raw_title:
+                raise ValueError("Invalid news input: News dictionary must contain usable 'text' or 'title'.")
+
+            # Fallback text from title or title from text if one is missing
+            effective_text = raw_text or raw_title
+            effective_title = raw_title or (effective_text[:80] + "..." if len(effective_text) > 80 else effective_text)
+
+            if len(effective_text) < 5:
+                raise ValueError(
+                    f"Invalid news input: Content is too short to be processed ({len(effective_text)} chars)."
+                )
+
+            raw_news = {
+                "id": str(news_input.get("id") or f"NEWS_{int(time.time())}").strip(),
+                "title": effective_title,
+                "source": str(news_input.get("source") or "Realtime Pipeline").strip(),
+                "published_at": str(news_input.get("published_at") or timestamp_iso).strip(),
+                "text": effective_text,
+            }
+        else:
+            raise ValueError(f"Unsupported news_input type: {type(news_input).__name__}. Expected str, Path, or dict.")
+
+        if not isinstance(raw_news, dict):
+            raise ValueError(f"Malformed news input: Expected dictionary object, got {type(raw_news).__name__}.")
+
+        final_text = str(raw_news.get("text") or "").strip()
+        final_title = str(raw_news.get("title") or "").strip()
+
+        if not final_text and not final_title:
+            raise ValueError("Invalid news input: Neither usable text nor title could be extracted.")
+
+        if not final_text:
+            final_text = final_title
+
+        if len(final_text) < 5:
+            raise ValueError(f"Invalid news input: Final usable text is too short ({len(final_text)} chars).")
+
+        return {
+            "id": str(raw_news.get("id") or f"NEWS_{int(time.time())}").strip(),
+            "title": final_title or (final_text[:80] + "..." if len(final_text) > 80 else final_text),
+            "source": str(raw_news.get("source") or "Realtime Pipeline").strip(),
+            "published_at": str(raw_news.get("published_at") or timestamp_iso).strip(),
+            "text": final_text,
+        }
+
+    @staticmethod
+    def validate_pipeline_output(result: Dict[str, Any]) -> None:
+        """
+        Validates the final pipeline output dictionary against required schema and types.
+        Raises RuntimeError if required fields or structures are missing or malformed.
+        """
+        if not isinstance(result, dict):
+            raise RuntimeError(f"Pipeline output must be a dictionary, got {type(result).__name__}")
+
+        required_keys = (
+            "success",
+            "timestamp",
+            "duration_ms",
+            "processed_news",
+            "extracted_entities",
+            "matched_entities",
+            "graph_update_status",
+            "prediction_status",
+            "ripple_analysis_status",
+            "shock_origin",
+            "prediction_results",
+            "ripple_results",
+        )
+
+        missing_keys = [k for k in required_keys if k not in result]
+        if missing_keys:
+            raise RuntimeError(f"Pipeline output missing required keys: {missing_keys}")
+
+        if not isinstance(result["processed_news"], dict):
+            raise RuntimeError("Pipeline output 'processed_news' must be a dictionary")
+
+        if not isinstance(result["extracted_entities"], list):
+            raise RuntimeError("Pipeline output 'extracted_entities' must be a list")
+
+        if not isinstance(result["matched_entities"], list):
+            raise RuntimeError("Pipeline output 'matched_entities' must be a list")
+
+        if not isinstance(result["graph_update_status"], dict):
+            raise RuntimeError("Pipeline output 'graph_update_status' must be a dictionary")
+
+        if not isinstance(result["prediction_results"], dict):
+            raise RuntimeError("Pipeline output 'prediction_results' must be a dictionary")
+
     def resolve_shock_node(
         self,
         requested_node: Optional[str],
@@ -244,41 +393,10 @@ class RealtimePipeline:
 
         try:
             # ─────────────────────────────────────────────────────────────
-            # STAGE 1: NEWS INGESTION / DISRUPTION
+            # STAGE 1: NEWS INGESTION & INPUT VALIDATION
             # ─────────────────────────────────────────────────────────────
             current_stage = "NEWS_INGESTION"
-
-            if isinstance(news_input, (str, Path)):
-                file_path = Path(news_input)
-                if file_path.is_file():
-                    raw_news = self.news_service.load_news(str(file_path))
-                else:
-                    # Treat string input as raw text content
-                    raw_news = {
-                        "id": f"NEWS_CUSTOM_{int(time.time())}",
-                        "title": "Real-time Disruption Event",
-                        "source": "AtmoGraph Live Feed",
-                        "published_at": timestamp_iso,
-                        "text": str(news_input).strip(),
-                    }
-            elif isinstance(news_input, dict):
-                raw_news = {
-                    "id": news_input.get("id", f"NEWS_{int(time.time())}"),
-                    "title": news_input.get("title", "Supply Chain Event"),
-                    "source": news_input.get("source", "Realtime Pipeline"),
-                    "published_at": news_input.get("published_at", timestamp_iso),
-                    "text": news_input.get("text", ""),
-                }
-            else:
-                raise ValueError(f"Unsupported news_input type: {type(news_input)}")
-
-            processed_news = {
-                "id": raw_news.get("id"),
-                "title": raw_news.get("title"),
-                "source": raw_news.get("source"),
-                "published_at": raw_news.get("published_at"),
-                "text": raw_news.get("text"),
-            }
+            processed_news = self.validate_and_normalize_input(news_input, timestamp_iso=timestamp_iso)
             print(f"[REALTIME] News ingestion completed: '{processed_news['title']}' (ID: {processed_news['id']})")
 
             # ─────────────────────────────────────────────────────────────
@@ -286,8 +404,8 @@ class RealtimePipeline:
             # ─────────────────────────────────────────────────────────────
             current_stage = "NLP_EXTRACTION"
             text = processed_news.get("text", "")
-            if not text:
-                raise ValueError("News text is empty, cannot perform NLP extraction.")
+            if not text or len(text.strip()) < 5:
+                raise ValueError("News text is empty or too short, cannot perform NLP extraction.")
 
             article_source = processed_news.get("source")
             extracted_entities = self.nlp_service.extract_entities(text, source=article_source)
@@ -385,12 +503,12 @@ class RealtimePipeline:
                 print(f"[REALTIME] Ripple effect analysis completed: {affected_cnt} downstream entities affected from '{resolved_shock_node}' (depth: {max_d} hops)")
 
             # ─────────────────────────────────────────────────────────────
-            # STAGE 7: CONSOLIDATED INTELLIGENCE
+            # STAGE 7: CONSOLIDATED INTELLIGENCE & OUTPUT VALIDATION
             # ─────────────────────────────────────────────────────────────
+            current_stage = "OUTPUT_VALIDATION"
             duration_ms = round((time.time() - pipeline_start_time) * 1000, 1)
-            print("[REALTIME] Pipeline completed successfully\n")
 
-            return {
+            output_payload = {
                 "success": True,
                 "timestamp": timestamp_iso,
                 "duration_ms": duration_ms,
@@ -404,6 +522,11 @@ class RealtimePipeline:
                 "prediction_results": prediction_results,
                 "ripple_results": ripple_results,
             }
+
+            self.validate_pipeline_output(output_payload)
+
+            print("[REALTIME] Pipeline completed successfully\n")
+            return output_payload
 
         except Exception as err:
             duration_ms = round((time.time() - pipeline_start_time) * 1000, 1)
@@ -447,18 +570,39 @@ def run_realtime_pipeline(
 
 
 if __name__ == "__main__":
-    sample_news_file = ROOT_DIR / "data" / "news" / "port_strike_europe.json"
+    import argparse
+
+    parser = argparse.ArgumentParser(description="AtmoGraph Real-Time Pipeline Demo")
+    parser.add_argument("--chennai", action="store_true", help="Run Chennai cyclone disruption demo article")
+    parser.add_argument("--news-file", type=str, default=None, help="Path to news JSON file")
+    args = parser.parse_args()
+
     print("=" * 70)
     print("AtmoGraph Week 4: Real-Time Supply Chain Disruption Pipeline Demo")
     print("=" * 70)
-    print(f"Sample Input File: {sample_news_file}")
 
-    if not sample_news_file.exists():
-        print(f"Error: Sample file {sample_news_file} does not exist.")
-        sys.exit(1)
-
-    # Run pipeline with sample news
-    result = run_realtime_pipeline(news_input=sample_news_file)
+    if args.chennai:
+        chennai_news = {
+            "id": "LIVE_DEMO_CHENNAI_01",
+            "title": "Chennai Port Container Terminal Paralyzed Following Cyclone Warning",
+            "text": (
+                "Severe cyclone conditions along the Bay of Bengal have forced Chennai Port to "
+                "suspend all container freight vessel operations. Harbor authorities report high "
+                "berthing delays affecting automotive parts and electronic component distribution "
+                "to inland hubs."
+            ),
+            "source": "Maritime Logistics Daily",
+            "published_at": "2026-09-06T18:00:00Z",
+        }
+        print(f"Sample Input: Chennai Demo Article ({chennai_news['title']})")
+        result = run_realtime_pipeline(news_input=chennai_news)
+    else:
+        sample_news_file = Path(args.news_file) if args.news_file else (ROOT_DIR / "data" / "news" / "port_strike_europe.json")
+        print(f"Sample Input File: {sample_news_file}")
+        if not sample_news_file.exists():
+            print(f"Error: Sample file {sample_news_file} does not exist.")
+            sys.exit(1)
+        result = run_realtime_pipeline(news_input=sample_news_file)
 
     print("\n" + "=" * 70)
     print("PIPELINE EXECUTION SUMMARY")
