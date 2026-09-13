@@ -130,15 +130,15 @@ class LiveNewsWorker:
         """
         self.service = service or get_live_news_service()
 
-        # Configurable poll interval (default 300 seconds / 5 minutes)
+        # Configurable poll interval (default 10 seconds, configurable via LIVE_NEWS_POLL_INTERVAL)
         if poll_interval is not None:
             self.poll_interval = float(poll_interval)
         else:
-            env_interval = os.getenv("LIVE_NEWS_POLL_INTERVAL", "300")
+            env_interval = os.getenv("LIVE_NEWS_POLL_INTERVAL", "10")
             try:
                 self.poll_interval = float(env_interval)
             except ValueError:
-                self.poll_interval = 300.0
+                self.poll_interval = 10.0
 
         # Maximum articles to process per polling cycle (protects against sudden traffic bursts)
         if max_batch_size is not None:
@@ -154,13 +154,20 @@ class LiveNewsWorker:
         self._is_running = False
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
         # Monitoring statistics
         self._last_poll_time: Optional[float] = None
         self._processed_count: int = 0
         self._error_count: int = 0
         self._recent_results: List[Dict[str, Any]] = []
+
+        # Observability & status tracking metrics (in-memory)
+        self._total_polls: int = 0
+        self._successful_articles: int = 0
+        self._failed_articles: int = 0
+        self._last_successful_execution: Optional[str] = None
+        self._last_error_message: Optional[str] = None
 
         logger.info(
             f"LiveNewsWorker initialized | Polling Interval: {self.poll_interval}s | "
@@ -175,6 +182,36 @@ class LiveNewsWorker:
         """Returns True if the background worker thread is actively running."""
         with self._lock:
             return self._is_running and self._thread is not None and self._thread.is_alive()
+
+    @property
+    def total_polls(self) -> int:
+        """Total number of polling cycles executed."""
+        with self._lock:
+            return self._total_polls
+
+    @property
+    def successful_articles(self) -> int:
+        """Total number of articles successfully processed through pipeline."""
+        with self._lock:
+            return self._successful_articles
+
+    @property
+    def failed_articles(self) -> int:
+        """Total number of articles that encountered errors during processing."""
+        with self._lock:
+            return self._failed_articles
+
+    @property
+    def last_successful_execution(self) -> Optional[str]:
+        """ISO timestamp string of the most recent successful pipeline execution."""
+        with self._lock:
+            return self._last_successful_execution
+
+    @property
+    def last_error_message(self) -> Optional[str]:
+        """Most recent error message or exception encountered, if any."""
+        with self._lock:
+            return self._last_error_message
 
     # ─────────────────────────────────────────────────────────────────────────
     # WORKER LIFECYCLE CONTROLS
@@ -243,18 +280,29 @@ class LiveNewsWorker:
         :return: List of pipeline execution results.
         """
         limit = max_articles if max_articles is not None else self.max_batch_size
-        self._last_poll_time = time.time()
+        with self._lock:
+            self._total_polls += 1
+            self._last_poll_time = time.time()
         results: List[Dict[str, Any]] = []
 
         try:
             new_articles = self.service.get_new_articles()
         except Exception as e:
             logger.error(f"LiveNewsWorker: Exception fetching new articles from service: {e}", exc_info=True)
-            self._error_count += 1
+            with self._lock:
+                self._error_count += 1
+                self._last_error_message = str(e)
             return []
 
         if not new_articles:
-            logger.info("LiveNewsWorker: Poll complete — no new articles detected.")
+            logger.info("LiveNewsWorker: Poll complete — no new articles detected. Monitoring remains active.")
+            _safe_broadcast_event({
+                "type": "worker_status",
+                "status": "waiting",
+                "message": "Monitoring for new supply-chain news",
+                "next_poll_in": int(self.poll_interval),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
             return []
 
         # Enforce batch limit
@@ -291,7 +339,8 @@ class LiveNewsWorker:
 
                 # Mark article as processed in service deduplication registry
                 self.service.mark_processed(art_id, article=article)
-                self._processed_count += 1
+                with self._lock:
+                    self._processed_count += 1
 
                 # Extract existing pipeline results (do not re-calculate)
                 success = pipeline_result.get("success", False)
@@ -311,6 +360,10 @@ class LiveNewsWorker:
                 ripple_updated = pipeline_result.get("ripple_analysis_status") == "SUCCESS" or success
 
                 if success:
+                    with self._lock:
+                        self._successful_articles += 1
+                        self._last_successful_execution = datetime.now(timezone.utc).isoformat()
+
                     logger.info(
                         f"LiveNewsWorker: Pipeline SUCCESS for [{art_id}] | "
                         f"Shock Origin: '{shock_origin}' | "
@@ -374,6 +427,12 @@ class LiveNewsWorker:
                     logger.info(f"LiveNewsWorker: Broadcasted worker_status 'completed' for [{art_id}]")
 
                 else:
+                    err_msg = str(pipeline_result.get("error", "Pipeline execution non-success"))
+                    with self._lock:
+                        self._failed_articles += 1
+                        self._error_count += 1
+                        self._last_error_message = err_msg
+
                     logger.warning(
                         f"LiveNewsWorker: Pipeline reported non-success for [{art_id}] | "
                         f"Stage: {pipeline_result.get('failed_stage')} | "
@@ -384,7 +443,7 @@ class LiveNewsWorker:
                         "type": "worker_status",
                         "status": "error",
                         "article_id": art_id,
-                        "error": str(pipeline_result.get("error", "Pipeline execution non-success")),
+                        "error": err_msg,
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                     }
                     _safe_broadcast_event(err_event)
@@ -406,7 +465,11 @@ class LiveNewsWorker:
                 results.append(pipeline_result)
 
             except Exception as item_err:
-                self._error_count += 1
+                err_msg = str(item_err)
+                with self._lock:
+                    self._failed_articles += 1
+                    self._error_count += 1
+                    self._last_error_message = err_msg
                 logger.error(
                     f"LiveNewsWorker: Pipeline execution FAILED for article [{art_id}]: {item_err}",
                     exc_info=True,
@@ -416,14 +479,21 @@ class LiveNewsWorker:
                     "type": "worker_status",
                     "status": "error",
                     "article_id": art_id,
-                    "error": str(item_err),
+                    "error": err_msg,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
                 _safe_broadcast_event(err_event)
-                logger.info(f"LiveNewsWorker: Broadcasted worker_status 'error' for [{art_id}]")
-
                 # Mark as processed to prevent poisoned item from crashing subsequent cycles
                 self.service.mark_processed(art_id, article=article)
+
+        # Broadcast waiting status after batch finishes to signal ready for next poll
+        _safe_broadcast_event({
+            "type": "worker_status",
+            "status": "waiting",
+            "message": "Monitoring for new supply-chain news",
+            "next_poll_in": int(self.poll_interval),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
 
         return results
 
@@ -438,8 +508,17 @@ class LiveNewsWorker:
             try:
                 self.run_once()
             except Exception as loop_err:
-                self._error_count += 1
+                err_msg = str(loop_err)
+                with self._lock:
+                    self._error_count += 1
+                    self._last_error_message = err_msg
                 logger.error(f"LiveNewsWorker: Uncaught error in worker loop: {loop_err}", exc_info=True)
+                _safe_broadcast_event({
+                    "type": "worker_status",
+                    "status": "error",
+                    "error": err_msg,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
 
             # Interruptible wait: if stop() is called, this unblocks immediately
             if self._stop_event.wait(timeout=self.poll_interval):
@@ -453,19 +532,25 @@ class LiveNewsWorker:
 
     def get_status(self) -> Dict[str, Any]:
         """Returns the current worker operational status."""
-        return {
-            "is_running": self.is_running,
-            "poll_interval_seconds": self.poll_interval,
-            "max_batch_size": self.max_batch_size,
-            "last_poll_time": (
-                datetime.fromtimestamp(self._last_poll_time, tz=timezone.utc).isoformat()
-                if self._last_poll_time
-                else None
-            ),
-            "processed_count": self._processed_count,
-            "error_count": self._error_count,
-            "recent_executions": list(self._recent_results[-5:]),
-        }
+        with self._lock:
+            return {
+                "is_running": bool(self._is_running and self._thread is not None and self._thread.is_alive()),
+                "poll_interval_seconds": self.poll_interval,
+                "max_batch_size": self.max_batch_size,
+                "last_poll_time": (
+                    datetime.fromtimestamp(self._last_poll_time, tz=timezone.utc).isoformat()
+                    if self._last_poll_time
+                    else None
+                ),
+                "processed_count": self._processed_count,
+                "error_count": self._error_count,
+                "recent_executions": list(self._recent_results[-5:]),
+                "total_polls": self._total_polls,
+                "successful_articles": self._successful_articles,
+                "failed_articles": self._failed_articles,
+                "last_successful_execution": self._last_successful_execution,
+                "last_error_message": self._last_error_message,
+            }
 
 
 # Singleton helper
@@ -507,7 +592,7 @@ if __name__ == "__main__":
         "--interval",
         type=float,
         default=None,
-        help="Override polling interval in seconds (default: 300).",
+        help="Override polling interval in seconds (default: 10).",
     )
     parser.add_argument(
         "--continuous",
@@ -522,7 +607,7 @@ if __name__ == "__main__":
 
     demo_flag = args.demo or args.test
     svc = LiveNewsService(demo_mode=demo_flag)
-    worker = LiveNewsWorker(service=svc, poll_interval=args.interval or 300.0, max_batch_size=1)
+    worker = LiveNewsWorker(service=svc, poll_interval=args.interval or 10.0, max_batch_size=1)
 
     print(f"Mode         : {'DEMO' if demo_flag else 'LIVE RSS'}")
     print(f"Poll Interval: {worker.poll_interval}s")
@@ -544,8 +629,24 @@ if __name__ == "__main__":
             print(f" - GNN Delay Avg : {res.get('prediction_results', {}).get('summary', {}).get('avg_predicted_delay')} days")
             print(f" - Ripple Nodes  : {res.get('ripple_results', {}).get('total_affected_nodes', 0)}")
             print(f" - Execution Time: {res.get('duration_ms')}ms")
+
+            status = worker.get_status()
+            print("\nWorker Observability Status:")
+            print(f" - Total Polls               : {status['total_polls']}")
+            print(f" - Successful Articles       : {status['successful_articles']}")
+            print(f" - Failed Articles           : {status['failed_articles']}")
+            print(f" - Last Successful Execution : {status['last_successful_execution']}")
+            print(f" - Last Error Message        : {status['last_error_message']}")
+
             print("\n[PASS] Immediate test execution completed with 100% success!")
         else:
+            status = worker.get_status()
+            print("\nWorker Observability Status:")
+            print(f" - Total Polls               : {status['total_polls']}")
+            print(f" - Successful Articles       : {status['successful_articles']}")
+            print(f" - Failed Articles           : {status['failed_articles']}")
+            print(f" - Last Successful Execution : {status['last_successful_execution']}")
+            print(f" - Last Error Message        : {status['last_error_message']}")
             print("\n[INFO] No new articles needed processing (already deduplicated).")
     elif args.continuous:
         print("\n[CONTINUOUS MODE] Starting background worker thread...")
