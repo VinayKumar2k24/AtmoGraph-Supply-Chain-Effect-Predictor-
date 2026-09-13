@@ -328,7 +328,7 @@ export default function DashboardOverview() {
       )}
 
       {/* Live News & WebSocket Stream Status Card */}
-      <LiveNewsStatus onDataRefresh={refreshDataInBackground} />
+      <LiveNewsStatus onDataRefresh={refreshDataInBackground} fallbackEvent={articles.find((a) => a.is_live) || articles[0]} />
 
       {/* Summary KPI Bar */}
       <div className="dashboard-kpi-bar">

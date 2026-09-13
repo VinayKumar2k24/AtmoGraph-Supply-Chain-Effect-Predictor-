@@ -14,10 +14,20 @@ export const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:80
 async function apiFetch(path, opts = {}) {
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
   const url = `${API_BASE_URL}${normalizedPath}`;
+  
+  const token = localStorage.getItem('atmograph_token');
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(opts.headers || {}),
+  };
+
   const res = await fetch(url, {
-    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
     ...opts,
+    headers,
   });
+
   if (!res.ok) {
     let errorDetail = res.statusText;
     try {
@@ -29,6 +39,31 @@ async function apiFetch(path, opts = {}) {
     throw new Error(`API Error ${res.status}: ${errorDetail}`);
   }
   return res.json();
+}
+
+// ─── Authentication API ──────────────────────────────────────────────────────
+export async function signupUser(payload) {
+  return apiFetch('/api/auth/signup', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function loginUser(payload) {
+  return apiFetch('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function logoutUser() {
+  return apiFetch('/api/auth/logout', {
+    method: 'POST',
+  });
+}
+
+export async function fetchCurrentUser() {
+  return apiFetch('/api/auth/me');
 }
 
 // ─── Health ──────────────────────────────────────────────────────────────────
@@ -133,6 +168,19 @@ export async function fetchForecast(shockNode) {
   return apiFetch(`/api/forecast/30-60-90${query}`);
 }
 
+
+// ─── Live News Worker Control ─────────────────────────────────────────────────
+export async function getLiveNewsStatus() {
+  return apiFetch('/api/live-news/status');
+}
+
+export async function startLiveNews() {
+  return apiFetch('/api/live-news/start', { method: 'POST' });
+}
+
+export async function stopLiveNews() {
+  return apiFetch('/api/live-news/stop', { method: 'POST' });
+}
 // ═══════════════════════════════════════════════════════════════════════════════
 // MOCK DATA — mirrors the actual backend pipeline output
 // ═══════════════════════════════════════════════════════════════════════════════

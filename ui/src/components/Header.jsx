@@ -1,11 +1,52 @@
-import { useEffect, useState, useCallback } from 'react';
-import { GitBranch, Activity, RefreshCw, Bell, ShieldCheck, Sparkles } from 'lucide-react';
+import { useEffect, useState, useCallback, useRef } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import {
+  GitBranch,
+  Activity,
+  RefreshCw,
+  Bell,
+  LogOut,
+  Globe,
+  Building,
+  ChevronDown,
+  User,
+} from 'lucide-react';
 import { fetchHealth, fetchStats } from '../services/api.js';
+import { useAuth } from '../context/AuthContext.jsx';
 
 export default function Header({ backendStatus }) {
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
   const [refreshing, setRefreshing] = useState(false);
   const [localStatus, setLocalStatus] = useState(backendStatus || 'checking');
   const [graphMetrics, setGraphMetrics] = useState({ totalNodes: 18, totalRelationships: 24 });
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef(null);
+
+  useEffect(() => {
+    function handleClickOutside(event) {
+      if (menuRef.current && !menuRef.current.contains(event.target)) {
+        setMenuOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const handleSignOut = async () => {
+    setMenuOpen(false);
+    await logout();
+    navigate('/');
+  };
+
+  const initials = user?.full_name
+    ? user.full_name
+        .split(' ')
+        .map((p) => p[0])
+        .join('')
+        .slice(0, 2)
+        .toUpperCase()
+    : 'EA';
 
   const loadStats = useCallback(async () => {
     try {
@@ -104,9 +145,44 @@ export default function Header({ backendStatus }) {
           <span className="header-notification-dot" />
         </button>
 
-        <div className="header-user-badge" title="Authenticated User: Lead Engineer">
-          <div className="header-avatar">AG</div>
-          <span className="header-user-name">Demo User</span>
+        <div className="header-user-wrapper" ref={menuRef}>
+          <div
+            className="header-user-badge"
+            onClick={() => setMenuOpen(!menuOpen)}
+            title="User Profile & Settings"
+          >
+            <div className="header-avatar">{initials}</div>
+            <span className="header-user-name">{user?.full_name || 'Enterprise Admin'}</span>
+            <ChevronDown size={12} color="#94a3b8" />
+          </div>
+
+          {menuOpen && (
+            <div className="header-user-dropdown">
+              <div className="user-dropdown-header">
+                <div className="user-dropdown-name">{user?.full_name || 'Enterprise Admin'}</div>
+                <div className="user-dropdown-email">{user?.email || 'demo@atmograph.ai'}</div>
+                <div className="user-dropdown-org">{user?.organization || 'Global Logistics Corp'}</div>
+              </div>
+
+              <Link
+                to="/"
+                className="user-dropdown-item"
+                onClick={() => setMenuOpen(false)}
+              >
+                <Globe size={14} color="#06b6d4" />
+                <span>Public Website</span>
+              </Link>
+
+              <button
+                type="button"
+                className="user-dropdown-item danger"
+                onClick={handleSignOut}
+              >
+                <LogOut size={14} />
+                <span>Sign Out</span>
+              </button>
+            </div>
+          )}
         </div>
 
         <span className="header-week-badge">v2.0 Enterprise</span>

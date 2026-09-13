@@ -217,8 +217,8 @@ class LiveWebSocketService {
   constructor() {
     this.ws = null;
     this.url = WS_URL;
-    // Status can be: 'DISCONNECTED' | 'CONNECTING' | 'CONNECTED'
-    this.status = 'DISCONNECTED';
+    // Status can be: 'connected' | 'connecting' | 'disconnected' | 'error'
+    this.status = 'disconnected';
     this.listeners = new Set();
     this.reconnectAttempts = 0;
     this.maxReconnectAttempts = 50;
@@ -229,6 +229,8 @@ class LiveWebSocketService {
     this.latestProcessedEvent = null;
     this.workerStatus = null; // { status: 'processing'|'completed'|'error', ... }
     this.liveArticles = []; // Accumulator for live news articles
+    this.lastPong = null;
+    this.lastError = null;
     this.isExplicitlyClosed = false;
     this.isConnecting = false;
   }
@@ -252,7 +254,7 @@ class LiveWebSocketService {
 
     this.isConnecting = true;
     this.isExplicitlyClosed = false;
-    this._updateStatus('CONNECTING');
+    this._updateStatus('connecting');
     console.log('[LiveWS] Connecting... to', this.url);
 
     try {
@@ -270,7 +272,8 @@ class LiveWebSocketService {
         this.isConnecting = false;
         console.log('[LiveWS] Connected');
         this.reconnectAttempts = 0;
-        this._updateStatus('CONNECTED');
+        this.lastError = null;
+        this._updateStatus('connected');
         this._startHeartbeat();
       };
 
@@ -286,13 +289,15 @@ class LiveWebSocketService {
       this.ws.onerror = (err) => {
         this.isConnecting = false;
         console.warn('[LiveWS] WebSocket error occurred:', err);
+        this.lastError = 'WebSocket connection error';
+        this._updateStatus('error');
       };
 
       this.ws.onclose = (event) => {
         this.isConnecting = false;
         console.log('[LiveWS] Disconnected:', event.code, event.reason);
         this._stopHeartbeat();
-        this._updateStatus('DISCONNECTED');
+        this._updateStatus('disconnected');
 
         if (!this.isExplicitlyClosed) {
           this._scheduleReconnect();
@@ -300,8 +305,9 @@ class LiveWebSocketService {
       };
     } catch (err) {
       this.isConnecting = false;
+      this.lastError = err?.message || 'WebSocket initialization failed';
       console.error('[LiveWS] Failed to initialize WebSocket:', err);
-      this._updateStatus('DISCONNECTED');
+      this._updateStatus('error');
       this._scheduleReconnect();
     }
   }
@@ -330,12 +336,12 @@ class LiveWebSocketService {
     if (this.isExplicitlyClosed) return;
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
       console.warn('[LiveWS] Max reconnect attempts reached.');
-      this._updateStatus('DISCONNECTED');
+      this._updateStatus('disconnected');
       return;
     }
 
     this.reconnectAttempts++;
-    this._updateStatus('CONNECTING');
+    this._updateStatus('connecting');
     const delay = Math.min(1000 * Math.pow(1.5, this.reconnectAttempts), 8000);
     console.log(`[LiveWS] Reconnecting... in ${Math.round(delay)}ms (attempt ${this.reconnectAttempts})`);
 
@@ -355,8 +361,14 @@ class LiveWebSocketService {
   _handleMessage(data) {
     if (!data || typeof data !== 'object') return;
 
-    // Filter out internal keepalive pongs
-    if (data.type === 'pong') return;
+    // ── 0. pong heartbeat acknowledgment ─────────────────────────────────
+    if (data.type === 'pong') {
+      console.log('[LiveWS] Pong received:', data.timestamp);
+      this.lastPong = data.timestamp || new Date().toISOString();
+      this.latestEvent = data;
+      this._notifyListeners(data);
+      return;
+    }
 
     // Deduplication key: prevents processing exact duplicate frame
     const eventKey = `${data.type}_${data.article_id || ''}_${data.status || ''}_${data.timestamp || ''}`;
@@ -373,14 +385,20 @@ class LiveWebSocketService {
 
     // ── 1. worker_status ───────────────────────────────────────────────────
     if (data.type === 'worker_status') {
-      console.log('[LiveWS] Message received: worker_status');
+      console.log('[LiveWS] Message received: worker_status', data.status);
       this.workerStatus = {
-        status: data.status, // 'processing' | 'completed' | 'error'
+        status: data.status, // 'processing' | 'completed' | 'waiting' | 'monitoring' | 'stopped' | 'error'
         article_id: data.article_id,
         title: data.title || (data.article_id ? `Article ${data.article_id}` : ''),
         error: data.error,
+        message: data.message,
+        next_poll_in: data.next_poll_in,
         timestamp: data.timestamp || new Date().toISOString(),
       };
+      if (data.status === 'error') {
+        this.lastError = data.error || data.message || 'Worker error';
+        this._updateStatus('error');
+      }
     }
 
     // ── 2. live_news_processed ─────────────────────────────────────────────
@@ -394,7 +412,7 @@ class LiveWebSocketService {
 
       this.latestProcessedEvent = data;
 
-      // Also set workerStatus completed if not already set
+      // Also update workerStatus completed
       this.workerStatus = {
         status: 'completed',
         article_id: data.article_id,
@@ -413,11 +431,13 @@ class LiveWebSocketService {
     // ── 3. error event ─────────────────────────────────────────────────────
     else if (data.type === 'error') {
       console.warn('[LiveWS] Error event received:', data.error || data.message);
+      this.lastError = data.error || data.message || 'WebSocket Error';
       this.workerStatus = {
         status: 'error',
-        error: data.error || data.message || 'WebSocket Error',
+        error: this.lastError,
         timestamp: data.timestamp || new Date().toISOString(),
       };
+      this._updateStatus('error');
     }
 
     this._notifyListeners(data);
@@ -436,11 +456,14 @@ class LiveWebSocketService {
 
   getSnapshot() {
     return {
-      connectionStatus: this.status,
+      connectionStatus: this.status, // 'connected' | 'connecting' | 'disconnected' | 'error'
+      isConnected: this.status === 'connected',
       workerStatus: this.workerStatus,
       latestProcessedEvent: this.latestProcessedEvent,
       liveNewsArticles: [...this.liveArticles],
       latestEvent: this.latestEvent,
+      lastPong: this.lastPong,
+      lastError: this.lastError,
     };
   }
 

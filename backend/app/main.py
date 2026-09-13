@@ -16,6 +16,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.routes import (
+    live_news_control,
     graph,
     news,
     stats,
@@ -25,7 +26,9 @@ from backend.app.routes import (
     realtime,
     forecast,
     websocket,
+    auth,
 )
+from backend.app.services.auth_service import seed_demo_user
 
 
 app = FastAPI(
@@ -53,7 +56,22 @@ app.add_middleware(
 )
 
 
+# ─── Startup Event ───────────────────────────────────────────────────────────
+@app.on_event("startup")
+async def on_startup():
+    try:
+        seed_demo_user()
+    except Exception as exc:
+        print(f"[Auth] Warning during startup seeding: {exc}")
+
+
 # ─── Routers ─────────────────────────────────────────────────────────────────
+
+app.include_router(
+    auth.router,
+    prefix="/api/auth",
+    tags=["Authentication"]
+)
 
 app.include_router(
     graph.router,
@@ -117,6 +135,14 @@ app.include_router(
     websocket.router
 )
 
+
+# ─── Live News Worker Control ────────────────────────────────────────────────
+
+app.include_router(
+    live_news_control.router,
+    prefix="/api/live-news",
+    tags=["Live News Control"]
+)
 
 # ─── Health Check ────────────────────────────────────────────────────────────
 

@@ -1,0 +1,166 @@
+<USER_REQUEST>
+ATMO GRAPH HOME PAGE — FINAL UI REDESIGN TASK
+
+You are working on my existing AtmoGraph Supply Chain Intelligence project.
+
+IMPORTANT:
+I want you to modify ONLY the FRONTEND HOME PAGE.
+Do NOT modify the backend, FastAPI, Neo4j, GNN, NLP, WebSocket, live-news worker, APIs, routes, database, or any existing business logic.
+
+REFERENCE:
+Use the attached/reference image showing the desired AtmoGraph landing page design as the visual source of truth.
+
+CURRENT PROBLEM:
+The current Home page still looks like the older/simple design.
+I want the Home page redesigned to match the provided modern AtmoGraph landing-page reference.
+
+TARGET STYLE:
+- Premium enterprise AI/SaaS website
+- Dark navy/black background
+- Cyan + electric blue accents
+- White typography
+- Glassmorphism cards
+- Subtle glowing borders
+- Professional supply-chain / AI visual language
+- Clean spacing
+- Modern responsive layout
+- Smooth hover animations
+- No excessive animations
+- No generic template appearance
+
+==================================================
+1. HEADER / NAVIGATION
+==================================================
+
+Create a premium fixed/sticky navigation bar.
+
+LEFT:
+AtmoGraph logo/icon
+ATMO GRAPH
+SUPPLY CHAIN INTELLIGENCE
+
+CENTER:
+Home
+Platform
+How It Works
+Live Scenario
+About
+Security
+
+RIGHT:
+Sign In
+Get Started →
+
+Requirements:
+- Home should be highlighted with cyan underline/glow.
+- Header should have transparent/glass dark background.
+- Add subtle border-bottom.
+- Keep existing routing.
+- Do NOT create fake routes.
+- Use the existing routes wherever they already exist.
+
+Buttons:
+Sign In → existing login route.
+Get Started → existing signup/get-started route.
+
+==================================================
+2. HERO SECTION
+==================================================
+
+Create a large full-width hero section immediately below the header.
+
+LAYOUT:
+Two-column desktop layout.
+
+LEFT SIDE:
+
+Small cyan badge:
+
+AI-POWERED SUPPLY CHAIN 
+<truncated 8436 bytes>
+licate React applications.
+
+DO NOT create another App.jsx.
+
+DO NOT replace the entire routing system.
+
+Modify the minimum necessary frontend files.
+
+==================================================
+15. REFERENCE IMAGE
+==================================================
+
+The attached reference image is the visual source of truth.
+
+Match:
+
+- section ordering
+- spacing
+- dark theme
+- cyan accents
+- hero composition
+- card structure
+- typography hierarchy
+- footer structure
+- overall premium enterprise appearance
+
+The final Home page should visually resemble the reference, while still being an actual functional AtmoGraph application.
+
+==================================================
+16. VALIDATION
+==================================================
+
+After implementation:
+
+1. Run the frontend.
+2. Open http://localhost:5173/
+3. Verify the Home page.
+4. Verify every navbar link.
+5. Verify Get Started.
+6. Verify Sign In.
+7. Verify Explore Platform.
+8. Verify Watch Overview.
+9. Verify Get Started in CTA.
+10. Verify Watch Demo.
+11. Check browser console.
+12. Check for broken images.
+13. Check responsive layout.
+14. Run:
+
+npm run build
+
+The build must complete successfully.
+
+Do NOT stop after changing code.
+
+Actually inspect the rendered page and fix visual issues.
+
+FINAL REQUIREMENT:
+
+Do not modify backend logic.
+
+Do not modify FastAPI.
+
+Do not modify Neo4j.
+
+Do not modify GNN.
+
+Do not modify NLP.
+
+Do not modify WebSocket.
+
+Do not modify live-news worker.
+
+Do not modify realtime pipeline.
+
+ONLY redesign the public Home page UI.
+
+Make the result production-quality and visually close to the supplied reference.
+</USER_REQUEST>
+<ADDITIONAL_METADATA>
+The current local time is: 2026-09-13T20:05:32+05:30.
+
+The user has uploaded 1 image(s):
+- C:/Users/deepa/.gemini/antigravity/brain/3ac00b34-5663-4a87-a383-44ba1ab86101/.user_uploaded/media_1789310130619.jpg
+You can embed this image in an artifact if you need the USER to review it.
+</ADDITIONAL_METADATA>
