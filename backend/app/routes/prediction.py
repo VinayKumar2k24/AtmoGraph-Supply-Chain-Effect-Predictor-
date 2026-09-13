@@ -6,6 +6,8 @@ GET /api/prediction/predictions
 GET /api/prediction/evaluation
 """
 
+from datetime import datetime, timezone
+from typing import Dict, Any
 from fastapi import APIRouter, HTTPException
 
 from backend.app.services.gnn_predictor import (
@@ -13,8 +15,16 @@ from backend.app.services.gnn_predictor import (
     evaluate_gnn_model,
 )
 
-
 router = APIRouter()
+
+MODEL_TYPE: str = "GraphSAGE GNN"
+PREDICTION_TARGET: str = "delay_days"
+TARGET_UNIT: str = "days"
+TARGET_METRIC: str = "predicted_delay"
+
+
+def _get_current_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 # ============================================================
@@ -28,16 +38,34 @@ def get_gnn_predictions():
 
     Returns:
         - success
+        - model_type
+        - prediction_target
+        - target_unit
+        - timestamp
         - total_nodes
-        - node-level predictions
+        - metadata
+        - predictions
     """
-
     try:
+        timestamp_iso = _get_current_timestamp()
         results = predict_supply_chain_risk()
 
         return {
             "success": True,
+            "model_type": MODEL_TYPE,
+            "prediction_target": PREDICTION_TARGET,
+            "target_metric": TARGET_METRIC,
+            "target_unit": TARGET_UNIT,
+            "timestamp": timestamp_iso,
             "total_nodes": len(results),
+            "metadata": {
+                "model_type": MODEL_TYPE,
+                "prediction_target": PREDICTION_TARGET,
+                "target_metric": TARGET_METRIC,
+                "target_unit": TARGET_UNIT,
+                "node_count": len(results),
+                "generated_at": timestamp_iso,
+            },
             "predictions": results,
         }
 
@@ -58,39 +86,27 @@ def get_gnn_evaluation():
     Dynamically evaluate the trained GraphSAGE GNN model.
 
     Returns:
-        - MAE
-        - RMSE
-        - R²
-        - total evaluated nodes
-        - actual vs predicted delay for every node
+        - success
+        - model_type
+        - prediction_target
+        - target_unit
+        - timestamp
+        - metrics (MAE, RMSE, R²)
+        - total_nodes
+        - metadata
+        - predictions
     """
-
     try:
+        timestamp_iso = _get_current_timestamp()
 
         # ----------------------------------------------------
         # Run dynamic GNN evaluation
         # ----------------------------------------------------
-
         evaluation = evaluate_gnn_model()
 
         # ----------------------------------------------------
         # Get metrics
-        #
-        # Current evaluate_gnn_model() structure:
-        #
-        # {
-        #     "metrics": {
-        #         "mae": ...,
-        #         "rmse": ...,
-        #         "r2": ...
-        #     },
-        #     "total_nodes": ...,
-        #     "predictions": [...]
-        # }
-        #
-        # The fallback logic also supports older structures.
         # ----------------------------------------------------
-
         metrics = evaluation.get("metrics", {})
 
         mae = metrics.get(
@@ -113,7 +129,6 @@ def get_gnn_evaluation():
         # Support evaluation results where metrics are returned
         # directly at the top level.
         # ----------------------------------------------------
-
         if mae is None:
             mae = evaluation.get(
                 "mae",
@@ -135,7 +150,6 @@ def get_gnn_evaluation():
         # ----------------------------------------------------
         # Get total nodes
         # ----------------------------------------------------
-
         predictions = evaluation.get(
             "predictions",
             []
@@ -152,7 +166,6 @@ def get_gnn_evaluation():
         # ----------------------------------------------------
         # Validate metrics
         # ----------------------------------------------------
-
         if mae is None:
             raise ValueError(
                 "MAE metric was not returned by evaluate_gnn_model()"
@@ -168,26 +181,40 @@ def get_gnn_evaluation():
                 "R2 metric was not returned by evaluate_gnn_model()"
             )
 
-        # ----------------------------------------------------
-        # Return clean API response
-        # ----------------------------------------------------
+        mae_val = round(float(mae), 4)
+        rmse_val = round(float(rmse), 4)
+        r2_val = round(float(r2), 4)
+        node_cnt = int(total_nodes)
 
+        # ----------------------------------------------------
+        # Return clean API response with enriched metadata
+        # ----------------------------------------------------
         return {
             "success": True,
-
+            "model_type": MODEL_TYPE,
+            "prediction_target": PREDICTION_TARGET,
+            "target_metric": TARGET_METRIC,
+            "target_unit": TARGET_UNIT,
+            "timestamp": timestamp_iso,
             "metrics": {
-                "mae": round(float(mae), 4),
-                "rmse": round(float(rmse), 4),
-                "r2": round(float(r2), 4),
+                "mae": mae_val,
+                "rmse": rmse_val,
+                "r2": r2_val,
             },
-
-            "total_nodes": int(total_nodes),
-
+            "total_nodes": node_cnt,
+            "metadata": {
+                "model_type": MODEL_TYPE,
+                "prediction_target": PREDICTION_TARGET,
+                "target_metric": TARGET_METRIC,
+                "target_unit": TARGET_UNIT,
+                "node_count": node_cnt,
+                "generated_at": timestamp_iso,
+                "metrics_summary": f"MAE: {mae_val}d, RMSE: {rmse_val}d, R²: {r2_val}",
+            },
             "predictions": predictions,
         }
 
     except Exception as e:
-
         raise HTTPException(
             status_code=500,
             detail=f"GNN evaluation failed: {str(e)}",
