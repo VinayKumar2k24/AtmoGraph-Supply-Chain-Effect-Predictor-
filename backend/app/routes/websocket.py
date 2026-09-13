@@ -11,11 +11,13 @@ import sys
 import json
 import asyncio
 import logging
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Union, Set
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Request, HTTPException, status
+from starlette.websockets import WebSocketState
 
 # Ensure project root is in sys.path
 ROOT_DIR = Path(__file__).resolve().parents[3]
@@ -42,14 +44,16 @@ class ConnectionManager:
     """
     Manages active WebSocket connections for AtmoGraph.
     Supports connection lifecycle, broadcast to all connected clients,
-    safe disconnection cleanup, and thread-safe dispatch from background threads.
+    safe disconnection cleanup, dead connection pruning, and thread-safe
+    dispatch from background threads (e.g. LiveNewsWorker).
     """
 
     def __init__(self):
         self.active_connections: Set[WebSocket] = set()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._lock = threading.RLock()
 
-    def set_event_loop(self, loop: asyncio.AbstractEventLoop):
+    def set_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """Stores reference to the running FastAPI asyncio event loop."""
         self._loop = loop
 
@@ -65,9 +69,10 @@ class ConnectionManager:
             return self._loop
 
     async def connect(self, websocket: WebSocket) -> None:
-        """Accepts and registers a new WebSocket client."""
+        """Accepts and registers a new WebSocket client in a thread-safe manner."""
         await websocket.accept()
-        self.active_connections.add(websocket)
+        with self._lock:
+            self.active_connections.add(websocket)
 
         # Capture current event loop
         try:
@@ -76,66 +81,93 @@ class ConnectionManager:
             pass
 
         logger.info(
-            f"WebSocket client connected. Total active connections: {len(self.active_connections)}"
+            f"WebSocket client connected. Total active connections: {self.count()}"
         )
 
-        # Send welcome message upon connection
+        # Send welcome message upon connection; prune client immediately if send fails
         try:
             await websocket.send_json({
                 "type": "connection_established",
                 "message": "Connected to AtmoGraph Live WebSocket stream",
                 "timestamp": datetime.now(timezone.utc).isoformat(),
-                "active_connections": len(self.active_connections),
+                "active_connections": self.count(),
             })
-        except Exception as e:
-            logger.warning(f"Failed to send welcome message: {e}")
+        except Exception as exc:
+            logger.warning(f"Failed to send welcome message to new WebSocket client, pruning: {exc}")
+            self.disconnect(websocket)
 
     def disconnect(self, websocket: WebSocket) -> None:
-        """Removes a disconnected client from the active registry."""
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
-        logger.info(
-            f"WebSocket client disconnected. Remaining active connections: {len(self.active_connections)}"
-        )
+        """
+        Removes a client from the active registry in a thread-safe, idempotent manner.
+        """
+        was_present = False
+        with self._lock:
+            if websocket in self.active_connections:
+                self.active_connections.remove(websocket)
+                was_present = True
+
+        if was_present:
+            logger.info(
+                f"WebSocket client disconnected. Remaining active connections: {self.count()}"
+            )
 
     def count(self) -> int:
-        """Returns number of active client connections."""
-        return len(self.active_connections)
+        """Returns number of active client connections (thread-safe)."""
+        with self._lock:
+            return len(self.active_connections)
 
     async def broadcast(self, message: Union[Dict[str, Any], str]) -> None:
         """
         Asynchronously broadcasts a JSON payload to all connected clients.
-        Automatically prunes disconnected clients.
+        Automatically detects and prunes disconnected or failing clients.
         """
-        if not self.active_connections:
+        with self._lock:
+            connections = list(self.active_connections)
+
+        if not connections:
             logger.debug("No active WebSocket clients to receive broadcast.")
             return
 
         payload = message if isinstance(message, dict) else {"message": str(message)}
-        disconnected: List[WebSocket] = []
+        dead_connections: List[WebSocket] = []
 
         # Iterate over snapshot of active connections
-        for connection in list(self.active_connections):
+        for connection in connections:
+            # Check client state if available to avoid sending to already-closed sockets
+            if hasattr(connection, "client_state"):
+                state = getattr(connection, "client_state", None)
+                if state == WebSocketState.DISCONNECTED or getattr(state, "name", None) == "DISCONNECTED":
+                    dead_connections.append(connection)
+                    continue
+
             try:
                 await connection.send_json(payload)
-            except Exception as e:
-                logger.warning(f"Error broadcasting to WebSocket client, pruning: {e}")
-                disconnected.append(connection)
+            except (WebSocketDisconnect, RuntimeError, ConnectionResetError, Exception) as exc:
+                logger.warning(
+                    f"Error broadcasting to WebSocket client ({exc.__class__.__name__}: {exc}), marking for cleanup."
+                )
+                dead_connections.append(connection)
 
-        for dead_ws in disconnected:
-            self.disconnect(dead_ws)
+        # Clean up any dead connections from the active set
+        if dead_connections:
+            for dead_ws in dead_connections:
+                self.disconnect(dead_ws)
 
     def broadcast_sync(self, message: Union[Dict[str, Any], str]) -> None:
         """
         Thread-safe synchronous broadcast method.
         Can be called safely by background threads (e.g., LiveNewsWorker in threading.Thread).
         """
-        if not self.active_connections:
-            return
+        with self._lock:
+            if not self.active_connections:
+                return
 
         loop = self.get_event_loop()
         if loop and loop.is_running():
-            asyncio.run_coroutine_threadsafe(self.broadcast(message), loop)
+            try:
+                asyncio.run_coroutine_threadsafe(self.broadcast(message), loop)
+            except Exception as exc:
+                logger.warning(f"Error dispatching thread-safe WebSocket broadcast: {exc}")
         else:
             logger.warning("No running asyncio event loop available for thread-safe WebSocket broadcast.")
 
@@ -258,11 +290,11 @@ async def websocket_live_endpoint(websocket: WebSocket):
                 })
 
     except WebSocketDisconnect:
-        manager.disconnect(websocket)
         logger.info("WebSocket connection closed cleanly by client.")
     except Exception as exc:
+        logger.warning(f"WebSocket client connection closed with error ({exc.__class__.__name__}: {exc})")
+    finally:
         manager.disconnect(websocket)
-        logger.warning(f"WebSocket client connection closed with error: {exc}")
 
 
 # =============================================================================
@@ -310,4 +342,3 @@ async def internal_live_broadcast_endpoint(event_data: Dict[str, Any], request: 
         "event_type": event_data.get("type"),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
-
