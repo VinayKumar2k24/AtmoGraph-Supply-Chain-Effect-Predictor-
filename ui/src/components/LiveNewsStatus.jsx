@@ -161,7 +161,9 @@ export default function LiveNewsStatus({ onDataRefresh, fallbackEvent }) {
   const monitorState = (() => {
     if (actionLoading && !workerRunning) return 'starting';
     if (actionLoading && workerRunning) return 'stopping';
+    if (wsStatus === 'error') return 'error';
     if (isProcessing) return 'processing';
+    if (wsStatus === 'completed') return 'completed';
     if (workerRunning) return 'monitoring';
     return 'stopped';
   })();
@@ -212,19 +214,29 @@ export default function LiveNewsStatus({ onDataRefresh, fallbackEvent }) {
       dotColor: '#38bdf8',
       bg: 'rgba(56, 189, 248, 0.14)',
       border: 'rgba(56, 189, 248, 0.35)',
-      statusTitle: 'PROCESSING LIVE NEWS…',
+      statusTitle: 'Live analysis in progress',
       statusText: 'PROCESSING',
       subText: 'Ingesting news article · running NLP entity extraction & GNN cascade prediction…',
       pulse: true,
+    },
+    completed: {
+      color: '#22c55e',
+      dotColor: '#22c55e',
+      bg: 'rgba(34, 197, 94, 0.14)',
+      border: 'rgba(34, 197, 94, 0.35)',
+      statusTitle: 'Live analysis completed',
+      statusText: 'COMPLETED',
+      subText: 'Disruption event analyzed · Knowledge graph and cascade predictions updated',
+      pulse: false,
     },
     error: {
       color: '#ef4444',
       dotColor: '#ef4444',
       bg: 'rgba(239, 68, 68, 0.14)',
       border: 'rgba(239, 68, 68, 0.35)',
-      statusTitle: 'LIVE NEWS ERROR',
+      statusTitle: 'Live analysis error',
       statusText: 'ERROR',
-      subText: 'An error occurred during live news monitoring',
+      subText: workerStatus?.error || 'An error occurred during live news monitoring',
       pulse: false,
     },
   };
@@ -472,10 +484,10 @@ export default function LiveNewsStatus({ onDataRefresh, fallbackEvent }) {
             {hasEvent && (
               <div style={{ display: 'flex', gap: 16, fontSize: 12, borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: 8 }}>
                 <span style={{ color: '#94a3b8' }}>
-                  NLP Extracted: <strong style={{ color: '#f1f5f9' }}>{extCount}</strong>
+                  Extracted Entities: <strong style={{ color: '#38bdf8' }}>{extCount}</strong>
                 </span>
                 <span style={{ color: '#94a3b8' }}>
-                  Matched: <strong style={{ color: '#22c55e' }}>{matCount}</strong>
+                  Matched Entities: <strong style={{ color: '#22c55e' }}>{matCount}</strong>
                 </span>
                 {ev.risk_level && (
                   <span style={{ color: '#94a3b8' }}>
@@ -500,17 +512,17 @@ export default function LiveNewsStatus({ onDataRefresh, fallbackEvent }) {
           </div>
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
             <MetricBox
-              label="GNN DELAY"
+              label="GNN AVG PREDICTED DELAY"
               value={hasEvent && ev.avg_predicted_delay != null ? `${Number(ev.avg_predicted_delay).toFixed(2)} days` : '--'}
               color="#38bdf8"
             />
             <MetricBox
-              label="AFFECTED NODES"
+              label="AFFECTED RIPPLE NODES"
               value={hasEvent && ev.affected_nodes != null ? `${ev.affected_nodes} node${ev.affected_nodes !== 1 ? 's' : ''}` : '--'}
               color="#a78bfa"
             />
             <MetricBox
-              label="RIPPLE DEPTH"
+              label="MAX RIPPLE DEPTH"
               value={hasEvent && ev.max_depth != null ? `${ev.max_depth} hop${ev.max_depth !== 1 ? 's' : ''}` : '--'}
               color="#34d399"
             />

@@ -15,6 +15,7 @@ import ProtectedRoute from './components/ProtectedRoute.jsx';
 import { AuthProvider } from './context/AuthContext.jsx';
 import { LiveWebSocketProvider } from './context/LiveWebSocketContext.jsx';
 import { fetchHealth } from './services/api.js';
+import RealtimeEventIndicator from './components/RealtimeEventIndicator.jsx';
 
 function PlatformShell({ backendStatus }) {
   return (
@@ -25,6 +26,7 @@ function PlatformShell({ backendStatus }) {
         <main className="app-main">
           <Outlet />
         </main>
+        <RealtimeEventIndicator />
       </div>
     </ProtectedRoute>
   );
