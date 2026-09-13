@@ -7,8 +7,16 @@ calculates hop-by-hop ripple propagation scores using exponential decay,
 and enriches each affected entity with GNN delay predictions and path descriptions.
 """
 
+import sys
 import time
+from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
+
+# Ensure project root is in sys.path
+ROOT_DIR = Path(__file__).resolve().parents[3]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
 from backend.app.services.graph_data import load_supply_chain_graph
 from backend.app.services.gnn_predictor import predict_supply_chain_risk
 
@@ -22,6 +30,24 @@ DEFAULT_MAX_DEPTH: int = 4   # Maximum graph propagation horizon
 _CACHE_DATA: Optional[Tuple[Dict[str, Any], List[Dict[str, Any]], Dict[str, Any], Dict[str, str]]] = None
 _CACHE_TIMESTAMP: float = 0.0
 _CACHE_TTL_SECONDS: float = 60.0  # 60-second in-memory cache to avoid repeated Neo4j queries and model loads
+
+
+def _safe_float(val: Any, default: float = 0.0) -> float:
+    """Safely converts a value to float, handling None, empty values, and malformed types."""
+    if val is None:
+        return default
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return default
+
+
+def _safe_str(val: Any, default: str = "") -> str:
+    """Safely converts a value to stripped string, handling None and empty values."""
+    if val is None:
+        return default
+    s = str(val).strip()
+    return s if s else default
 
 
 def invalidate_ripple_cache() -> None:
@@ -62,7 +88,7 @@ def _build_graph_cache(force_refresh: bool = False):
     for n in nodes:
         nid = n["neo4j_id"]
         lookup_map[nid.lower()] = nid
-        props = n.get("properties", {})
+        props = n.get("properties") or {}
         if props.get("id"):
             lookup_map[str(props["id"]).lower()] = nid
         if props.get("name"):
@@ -76,36 +102,47 @@ def _build_graph_cache(force_refresh: bool = False):
 def get_ripple_candidate_nodes() -> List[Dict[str, Any]]:
     """
     Returns all supply chain nodes available for ripple simulation,
-    sorted by disruption descending, then risk descending.
+    sorted by disruption descending, then risk descending, then name.
     """
     node_map, _, pred_map, _ = _build_graph_cache()
     candidates = []
 
     for nid, node in node_map.items():
-        props = node.get("properties", {})
-        labels = node.get("labels", [])
+        props = node.get("properties") or {}
+        labels = node.get("labels") or []
         entity_type = labels[0] if labels else "Unknown"
-        pred = pred_map.get(nid, {})
+        pred = pred_map.get(nid) or {}
 
-        status = str(props.get("status", "")).upper()
+        status = _safe_str(props.get("status"), "NORMAL").upper()
+        disruption_raw = props.get("disruption") if props.get("disruption") is not None else pred.get("disruption")
         disruption = (
             1.0 if status == "DISRUPTED"
             else (0.75 if "DELAY" in status
                   else (0.5 if "RISK" in status
-                        else float(props.get("disruption", pred.get("disruption", 0.0)))))
+                        else _safe_float(disruption_raw, 0.0)))
         )
-        risk = float(props.get("risk", pred.get("risk", 0.0)))
-        predicted_delay = float(pred.get("predicted_delay", props.get("delay", 0.0)))
+        risk = _safe_float(props.get("risk") if props.get("risk") is not None else pred.get("risk"), 0.0)
+        delay_raw = pred.get("predicted_delay") if pred.get("predicted_delay") is not None else props.get("delay")
+        predicted_delay = _safe_float(delay_raw, 0.0)
+        actual_delay = _safe_float(pred.get("actual_delay") if pred.get("actual_delay") is not None else props.get("delay"), 0.0)
+        capacity = _safe_float(props.get("capacity") if props.get("capacity") is not None else pred.get("capacity"), 0.0)
+
+        node_id_str = _safe_str(props.get("id"), nid)
+        node_name_str = _safe_str(props.get("name"), node_id_str)
 
         candidates.append({
             "neo4j_id": nid,
-            "id": props.get("id"),
-            "name": props.get("name", props.get("id", "Unknown")),
+            "id": node_id_str,
+            "name": node_name_str,
             "entity_type": entity_type,
-            "status": status or "NORMAL",
+            "status": status,
             "risk": round(risk, 4),
             "disruption": round(disruption, 4),
             "predicted_delay": round(predicted_delay, 2),
+            "actual_delay": round(actual_delay, 2),
+            "capacity": round(capacity, 4),
+            "country": _safe_str(props.get("country"), ""),
+            "city": _safe_str(props.get("city"), ""),
         })
 
     # Sort candidates so most disrupted/risky entities appear first
@@ -173,32 +210,44 @@ def calculate_ripple_propagation(
         return None
 
     src_node = node_map[target_nid]
-    src_props = src_node.get("properties", {})
-    src_labels = src_node.get("labels", [])
+    src_props = src_node.get("properties") or {}
+    src_labels = src_node.get("labels") or []
     src_type = src_labels[0] if src_labels else "Unknown"
-    src_pred = pred_map.get(target_nid, {})
+    src_pred = pred_map.get(target_nid) or {}
 
     # Compute baseline disruption
-    status = str(src_props.get("status", "")).upper()
+    status = _safe_str(src_props.get("status"), "NORMAL").upper()
+    disruption_raw = src_props.get("disruption") if src_props.get("disruption") is not None else src_pred.get("disruption")
     disruption = (
         1.0 if status == "DISRUPTED"
         else (0.75 if "DELAY" in status
               else (0.5 if "RISK" in status
-                    else float(src_props.get("disruption", src_pred.get("disruption", 0.0)))))
+                    else _safe_float(disruption_raw, 0.0)))
     )
     # Ensure a non-zero propagation baseline so shock ripples visibly
     if disruption <= 0.0:
-        disruption = max(float(src_props.get("risk", src_pred.get("risk", 0.0))), 0.5)
+        disruption = max(_safe_float(src_props.get("risk") if src_props.get("risk") is not None else src_pred.get("risk"), 0.0), 0.5)
+
+    src_id_str = _safe_str(src_props.get("id"), target_nid)
+    src_name_str = _safe_str(src_props.get("name"), src_id_str)
+    src_risk = _safe_float(src_props.get("risk") if src_props.get("risk") is not None else src_pred.get("risk"), 0.0)
+    src_pred_delay = _safe_float(src_pred.get("predicted_delay") if src_pred.get("predicted_delay") is not None else src_props.get("delay"), 0.0)
+    src_act_delay = _safe_float(src_pred.get("actual_delay") if src_pred.get("actual_delay") is not None else src_props.get("delay"), 0.0)
+    src_capacity = _safe_float(src_props.get("capacity") if src_props.get("capacity") is not None else src_pred.get("capacity"), 0.0)
 
     source_info = {
         "neo4j_id": target_nid,
-        "id": src_props.get("id"),
-        "name": src_props.get("name", src_props.get("id", "Unknown")),
+        "id": src_id_str,
+        "name": src_name_str,
         "entity_type": src_type,
-        "status": status or "NORMAL",
-        "risk": round(float(src_props.get("risk", src_pred.get("risk", 0.0))), 4),
+        "status": status,
+        "risk": round(src_risk, 4),
         "disruption": round(disruption, 4),
-        "predicted_delay": round(float(src_pred.get("predicted_delay", src_props.get("delay", 0.0))), 2),
+        "predicted_delay": round(src_pred_delay, 2),
+        "actual_delay": round(src_act_delay, 2),
+        "capacity": round(src_capacity, 4),
+        "country": _safe_str(src_props.get("country"), ""),
+        "city": _safe_str(src_props.get("city"), ""),
     }
 
     # BFS Traversal
@@ -209,9 +258,9 @@ def calculate_ripple_propagation(
     print(f"[RippleEngine] ==================================================")
 
     queue = [(target_nid, 0, [])]
-    visited_depth = {target_nid: 0}
-    affected_nodes = []
-    paths = []
+    visited_depth: Dict[str, int] = {target_nid: 0}
+    affected_nodes_dict: Dict[str, Dict[str, Any]] = {}
+    paths: List[Dict[str, Any]] = []
     seen_edges = set()
 
     while queue:
@@ -223,13 +272,14 @@ def calculate_ripple_propagation(
         for next_id, rel_type in neighbors:
             next_depth = depth + 1
 
-            curr_name = node_map[curr_id].get("properties", {}).get("name", curr_id)
-            next_node = node_map[next_id]
-            next_props = next_node.get("properties", {})
-            next_name = next_props.get("name", next_id)
+            curr_props = node_map.get(curr_id, {}).get("properties") or {}
+            curr_name = _safe_str(curr_props.get("name"), curr_id)
+            next_node = node_map.get(next_id) or {}
+            next_props = next_node.get("properties") or {}
+            next_id_str = _safe_str(next_props.get("id"), next_id)
+            next_name = _safe_str(next_props.get("name"), next_id_str)
 
             # Check if this edge is a valid downstream propagation edge
-            # (i.e. next_id is first visited or reached at the same or shorter depth)
             is_first_visit = (next_id not in visited_depth)
             is_shorter = (not is_first_visit and next_depth < visited_depth[next_id])
             is_same_depth = (not is_first_visit and next_depth == visited_depth[next_id])
@@ -246,8 +296,9 @@ def calculate_ripple_propagation(
                     "depth": next_depth,
                 })
                 if is_same_depth:
-                    next_pred = pred_map.get(next_id, {})
-                    same_pred_delay = round(float(next_pred.get("predicted_delay", next_props.get("delay", 0.0))), 2)
+                    next_pred = pred_map.get(next_id) or {}
+                    delay_raw = next_pred.get("predicted_delay") if next_pred.get("predicted_delay") is not None else next_props.get("delay")
+                    same_pred_delay = round(_safe_float(delay_raw, 0.0), 2)
                     same_ripple_score = round(disruption * (decay ** next_depth), 4)
                     print(
                         f"[RippleEngine] Traversal (convergent): {curr_name} --[{rel_type}]--> {next_name} | "
@@ -257,8 +308,8 @@ def calculate_ripple_propagation(
             if is_first_visit or is_shorter:
                 visited_depth[next_id] = next_depth
 
-                next_pred = pred_map.get(next_id, {})
-                next_labels = next_node.get("labels", [])
+                next_pred = pred_map.get(next_id) or {}
+                next_labels = next_node.get("labels") or []
                 next_type = next_labels[0] if next_labels else "Unknown"
 
                 # Calculate exponential decay ripple score
@@ -266,8 +317,23 @@ def calculate_ripple_propagation(
                 # depth 2: 0.49 * disruption
                 # depth 3: 0.343 * disruption
                 ripple_score = round(disruption * (decay ** next_depth), 4)
-                pred_delay = round(float(next_pred.get("predicted_delay", next_props.get("delay", 0.0))), 2)
-                act_delay = round(float(next_pred.get("actual_delay", next_props.get("delay", 0.0))), 2)
+
+                pred_delay_raw = next_pred.get("predicted_delay") if next_pred.get("predicted_delay") is not None else next_props.get("delay")
+                pred_delay = round(_safe_float(pred_delay_raw, 0.0), 2)
+
+                act_delay_raw = next_pred.get("actual_delay") if next_pred.get("actual_delay") is not None else next_props.get("delay")
+                act_delay = round(_safe_float(act_delay_raw, 0.0), 2)
+
+                risk_raw = next_props.get("risk") if next_props.get("risk") is not None else next_pred.get("risk")
+                node_risk = round(_safe_float(risk_raw, 0.0), 4)
+
+                disrupt_raw = next_props.get("disruption") if next_props.get("disruption") is not None else next_pred.get("disruption")
+                node_disruption = round(_safe_float(disrupt_raw, 0.0), 4)
+
+                cap_raw = next_props.get("capacity") if next_props.get("capacity") is not None else next_pred.get("capacity")
+                node_capacity = round(_safe_float(cap_raw, 0.0), 4)
+
+                next_status = _safe_str(next_props.get("status"), "NORMAL").upper()
 
                 print(
                     f"[RippleEngine] Traversal: {curr_name} --[{rel_type}]--> {next_name} | "
@@ -289,11 +355,13 @@ def calculate_ripple_propagation(
                 ordered_rels = [p["relationship"] for p in new_path]
                 explanation_sentence = f"{next_name} is affected through a {next_depth}-hop downstream path from {source_info['name']}."
 
-                affected_nodes.append({
+                # Create or update affected node record (ensures NO duplicate affected nodes)
+                affected_nodes_dict[next_id] = {
                     "neo4j_id": next_id,
-                    "id": next_props.get("id"),
+                    "id": next_id_str,
                     "name": next_name,
                     "entity_type": next_type,
+                    "status": next_status,
                     "depth": next_depth,
                     "hops": next_depth,
                     "nodes": ordered_nodes,
@@ -302,22 +370,26 @@ def calculate_ripple_propagation(
                     "ripple_score": ripple_score,
                     "predicted_delay": pred_delay,
                     "actual_delay": act_delay,
-                    "risk": round(float(next_props.get("risk", next_pred.get("risk", 0.0))), 4),
-                    "disruption": round(float(next_props.get("disruption", next_pred.get("disruption", 0.0))), 4),
-                    "capacity": round(float(next_props.get("capacity", next_pred.get("capacity", 0.0))), 4),
+                    "risk": node_risk,
+                    "disruption": node_disruption,
+                    "capacity": node_capacity,
                     "relationship": rel_type,
                     "path_description": path_desc,
-                })
+                    "country": _safe_str(next_props.get("country"), ""),
+                    "city": _safe_str(next_props.get("city"), ""),
+                }
 
                 queue.append((next_id, next_depth, new_path))
 
+    affected_nodes = list(affected_nodes_dict.values())
     max_d = max([a["depth"] for a in affected_nodes], default=0)
     print(
         f"[RippleEngine] Simulation Complete: {len(affected_nodes)} affected nodes across {len(paths)} traversed paths (Max Depth: {max_d} hops).\n"
     )
 
-    # Sort affected nodes by ripple_score descending, then depth ascending
-    affected_nodes.sort(key=lambda x: (-x["ripple_score"], x["depth"]))
+    # Sort affected nodes meaningfully by ripple_score descending (peak impact first),
+    # then propagation depth ascending (nearest first), predicted delay descending, and name
+    affected_nodes.sort(key=lambda x: (-x["ripple_score"], x["depth"], -x["predicted_delay"], x["name"]))
 
     return {
         "success": True,
@@ -368,26 +440,59 @@ def get_explainability_paths(
 
     paths = []
     for a in affected_nodes:
+        node_name = a.get("name") or "Unknown"
+        hops = a.get("depth", a.get("hops", 1))
+        src_name = source_info.get("name") or "Source"
         paths.append({
-            "target": a["name"],
+            "target": node_name,
+            "target_id": a.get("id") or a.get("neo4j_id", ""),
             "target_type": a.get("entity_type", "Unknown"),
-            "hops": a.get("depth", a.get("hops", 1)),
-            "nodes": a.get("nodes", [source_info["name"], a["name"]]),
+            "hops": hops,
+            "nodes": a.get("nodes", [src_name, node_name]),
             "relationships": a.get("relationships", [a.get("relationship", "")]),
             "predicted_delay": a.get("predicted_delay", 0.0),
             "actual_delay": a.get("actual_delay", 0.0),
             "ripple_score": a.get("ripple_score", 0.0),
             "explanation": a.get(
                 "explanation",
-                f"{a['name']} is affected through a {a.get('depth', 1)}-hop downstream path from {source_info['name']}."
+                f"{node_name} is affected through a {hops}-hop downstream path from {src_name}."
             ),
         })
 
     return {
-        "source": source_info["name"],
+        "source": source_info.get("name", "Unknown"),
         "source_id": source_info.get("id"),
         "source_type": source_info.get("entity_type"),
         "total_paths": len(paths),
         "max_depth": res.get("max_depth", 0),
         "paths": paths,
     }
+
+
+if __name__ == "__main__":
+    import sys
+
+    target = sys.argv[1] if len(sys.argv) > 1 else "Rotterdam Port"
+    print(f"[RippleEffect CLI] Executing simulation for: '{target}'")
+    result = calculate_ripple_propagation(target)
+    if result:
+        print(f"Success               : {result.get('success')}")
+        src = result.get("source_node", {})
+        print(f"Source Node           : {src.get('name')} ({src.get('entity_type')}) [ID: {src.get('id')}]")
+        print(f"Source Disruption     : {src.get('disruption')} | Risk: {src.get('risk')} | Delay: {src.get('predicted_delay')}d")
+        print(f"Total Affected Nodes  : {result.get('total_affected_nodes')}")
+        print(f"Max Traversed Depth   : {result.get('max_depth')} hops")
+        print(f"Traversed Paths Count : {len(result.get('paths', []))}")
+        print("\nAffected Nodes Summary:")
+        print("-" * 70)
+        for a in result.get("affected_nodes", []):
+            print(
+                f" - {a.get('name')} ({a.get('entity_type')}) [ID: {a.get('id')}] | "
+                f"Hop: {a.get('depth')} | "
+                f"Ripple Score: {a.get('ripple_score', 0.0) * 100:.1f}% | "
+                f"GNN Delay: {a.get('predicted_delay')}d"
+            )
+        print("\n[RippleEffect CLI] Verification completed successfully.")
+    else:
+        print(f"[RippleEffect CLI] Error: Node '{target}' could not be resolved.")
+        sys.exit(1)
